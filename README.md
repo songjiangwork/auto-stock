@@ -21,6 +21,31 @@ CLI-first proof-of-concept for automated US stock/ETF trading with:
   - Account daily drawdown guard
   - Trend filter: allow new long entries only when `SPY > MA200`
 
+## Strategy Composition
+- Strategies are config-driven under `strategy_combo`.
+- Supported strategies now:
+  - `ma` (moving-average crossover)
+  - `rsi` (oversold/overbought)
+- Supported combination modes:
+  - `weighted` (recommended)
+  - `vote`
+  - `unanimous`
+  - `priority`
+- Example to combine MA and RSI:
+```yaml
+strategy_combo:
+  enabled_strategies: [ma, rsi]
+  combination_mode: weighted
+  decision_threshold: 0.2
+  weights:
+    ma: 0.7
+    rsi: 0.3
+  rsi:
+    window: 14
+    oversold: 30
+    overbought: 70
+```
+
 ## Prerequisites
 1. Install Python 3.10+.
 2. Install and run IB Gateway or TWS.

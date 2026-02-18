@@ -6,7 +6,7 @@ from pathlib import Path
 
 from autostock.config import AppConfig
 from autostock.ib_client import IBClient
-from autostock.strategy import simple_moving_average
+from autostock.strategy import Signal, evaluate_combined_signal
 
 
 @dataclass(slots=True)
@@ -75,9 +75,7 @@ def run_backtest_for_symbol(
         bar_size=use_bar_size,
     )
     closes = [bar.close for bar in bars]
-    short_window = config.strategy.short_window
-    long_window = config.strategy.long_window
-    if len(closes) < long_window + 5:
+    if len(closes) < 5:
         return BacktestResult(
             symbol=symbol,
             bars=len(closes),
@@ -90,11 +88,8 @@ def run_backtest_for_symbol(
             trades_detail=[],
         )
 
-    short_ma_full = simple_moving_average(closes, short_window)
-    long_ma = simple_moving_average(closes, long_window)
-    aligned_short = short_ma_full[-len(long_ma) :]
-    aligned_prices = closes[-len(long_ma) :]
-    aligned_bars = bars[-len(long_ma) :]
+    aligned_prices = closes
+    aligned_bars = bars
 
     in_position = False
     entry = 0.0
@@ -107,19 +102,17 @@ def run_backtest_for_symbol(
     losses = 0
     equity_curve = [initial_capital]
 
-    for i in range(1, len(long_ma)):
-        prev_short = aligned_short[i - 1]
-        curr_short = aligned_short[i]
-        prev_long = long_ma[i - 1]
-        curr_long = long_ma[i]
+    for i in range(1, len(aligned_prices)):
         price = aligned_prices[i]
         time_label = aligned_bars[i].date
-
-        cross_up = prev_short <= prev_long and curr_short > curr_long
-        cross_down = prev_short >= prev_long and curr_short < curr_long
+        signal_, _detail = evaluate_combined_signal(
+            aligned_prices[: i + 1],
+            config.strategy,
+            config.strategy_combo,
+        )
         stop_loss = in_position and price <= entry * (1 - config.risk.stop_loss_pct)
 
-        if cross_up and not in_position:
+        if signal_ == Signal.BUY and not in_position:
             budget = cash * config.risk.max_position_pct
             order_shares = int(budget // price)
             if order_shares > 0:
@@ -128,8 +121,8 @@ def run_backtest_for_symbol(
                 entry = price
                 entry_time = time_label
                 in_position = True
-        elif in_position and (cross_down or stop_loss):
-            exit_reason = "STOP_LOSS" if stop_loss else "MA_CROSS_SELL"
+        elif in_position and (signal_ == Signal.SELL or stop_loss):
+            exit_reason = "STOP_LOSS" if stop_loss else "STRATEGY_SELL"
             cash += shares * price
             trade_pnl = (price - entry) * shares
             realized_pnl += trade_pnl

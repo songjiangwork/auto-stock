@@ -10,7 +10,7 @@ from autostock.config import AppConfig
 from autostock.database import Database
 from autostock.ib_client import IBClient, PositionInfo
 from autostock.risk import RiskManager
-from autostock.strategy import Signal, moving_average_crossover_signal
+from autostock.strategy import Signal, evaluate_combined_signal
 
 
 @dataclass(slots=True)
@@ -78,8 +78,10 @@ def _execute_symbol(ctx: EngineContext, symbol: str, equity: float, positions: d
         _mark_event(ctx, "WARN", f"{symbol}: no historical data")
         return
     last_price = closes[-1]
-    signal_ = moving_average_crossover_signal(
-        closes, ctx.config.strategy.short_window, ctx.config.strategy.long_window
+    signal_, decision_detail = evaluate_combined_signal(
+        closes,
+        ctx.config.strategy,
+        ctx.config.strategy_combo,
     )
     position = positions.get(symbol, PositionInfo(symbol=symbol, quantity=0.0, avg_cost=0.0))
     unrealized = (last_price - position.avg_cost) * position.quantity if position.quantity else 0.0
@@ -106,8 +108,8 @@ def _execute_symbol(ctx: EngineContext, symbol: str, equity: float, positions: d
             _mark_event(ctx, "WARN", f"{symbol}: computed order quantity is 0")
             return
         status = ctx.broker.submit_market_order(symbol, "BUY", qty)
-        ctx.db.record_order(symbol, "BUY", qty, "MA_CROSS_BUY", status, price=last_price)
-        _mark_event(ctx, "INFO", f"{symbol}: BUY {qty} @ {last_price:.2f} ({status})")
+        ctx.db.record_order(symbol, "BUY", qty, "STRATEGY_BUY", status, price=last_price, note=decision_detail)
+        _mark_event(ctx, "INFO", f"{symbol}: BUY {qty} @ {last_price:.2f} ({status}) [{decision_detail}]")
         return
 
     if signal_ == Signal.SELL and position.quantity > 0:
@@ -115,11 +117,11 @@ def _execute_symbol(ctx: EngineContext, symbol: str, equity: float, positions: d
         status = ctx.broker.submit_market_order(symbol, "SELL", qty)
         approx_realized = (last_price - position.avg_cost) * qty
         _add_symbol_realized_pnl(ctx, symbol, approx_realized)
-        ctx.db.record_order(symbol, "SELL", qty, "MA_CROSS_SELL", status, price=last_price)
-        _mark_event(ctx, "INFO", f"{symbol}: SELL {qty} @ {last_price:.2f} ({status})")
+        ctx.db.record_order(symbol, "SELL", qty, "STRATEGY_SELL", status, price=last_price, note=decision_detail)
+        _mark_event(ctx, "INFO", f"{symbol}: SELL {qty} @ {last_price:.2f} ({status}) [{decision_detail}]")
         return
 
-    _mark_event(ctx, "DEBUG", f"{symbol}: signal={signal_.value}, position={position.quantity}")
+    _mark_event(ctx, "DEBUG", f"{symbol}: signal={signal_.value}, position={position.quantity}, detail={decision_detail}")
 
 
 def run_loop(config: AppConfig, db: Database, broker: IBClient, risk: RiskManager) -> None:

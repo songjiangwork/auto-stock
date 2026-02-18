@@ -23,6 +23,18 @@ strategy:
   duration: 60 D
   loop_interval_seconds: 60
 
+strategy_combo:
+  enabled_strategies: [ma, rsi]
+  combination_mode: weighted
+  decision_threshold: 0.2
+  weights:
+    ma: 1.0
+    rsi: 0.6
+  rsi:
+    window: 14
+    oversold: 30
+    overbought: 70
+
 ib:
   host: 127.0.0.1
   port: 7497
