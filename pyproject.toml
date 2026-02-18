@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autostock"
+version = "0.1.0"
+description = "CLI proof-of-concept for automated US stock/ETF quant trading on IB paper account"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "ib_insync==0.9.86",
+  "PyYAML==6.0.2",
+  "tzdata==2025.2",
+]
+
+[project.scripts]
+autostock = "autostock.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["autostock*"]

@@ -1,0 +1,35 @@
+symbols:
+  - MSFT
+  - NVDA
+  - TSLA
+  - META
+  - SOFI
+  - RGTI
+  - CCLD
+  - ISRG
+  - QCOM
+  - ALM
+
+risk:
+  max_position_pct: 0.20
+  stop_loss_pct: 0.08
+  symbol_daily_loss_pct: 0.02
+  account_daily_drawdown_pct: 0.05
+
+strategy:
+  short_window: 20
+  long_window: 50
+  bar_size: 5 mins
+  duration: 60 D
+  loop_interval_seconds: 60
+
+ib:
+  host: 127.0.0.1
+  port: 7497
+  client_id: 101
+  account: DUXXXXXXX
+  trading_mode: paper
+
+timezone: America/New_York
+database_path: data/autostock.db
+log_level: INFO
