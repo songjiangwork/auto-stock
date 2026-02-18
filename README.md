@@ -51,7 +51,10 @@ strategy_combo:
 2. Install and run IB Gateway or TWS.
 3. Enable API access in TWS/Gateway.
 4. Use paper account port (default `7497`).
-5. Update `config/config.yaml` with your paper account id (`DU...`).
+5. `ib.account` behavior:
+  - If `ib.account` is set to a real account id (e.g. `DU1234567`), that account is used and validated.
+  - If `ib.account` is empty (or placeholder like `DUXXXXXXX`), the app auto-selects the first available IB account after connect.
+  - If no account is available, startup fails with an error.
 
 ## Install
 ```bash

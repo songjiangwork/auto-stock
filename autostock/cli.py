@@ -54,6 +54,7 @@ def _doctor(config_path: str) -> int:
     try:
         broker.connect()
         print("IB connection: OK")
+        print(f"Selected account: {broker.get_active_account()}")
         equity = broker.get_equity()
         print(f"Net liquidation: {equity:.2f}")
         broker.ensure_symbols(config.symbols)

@@ -15,13 +15,26 @@ class PositionInfo:
     avg_cost: float
 
 
+def choose_account(preferred: str, managed_accounts: list[str]) -> str:
+    pref = (preferred or "").strip()
+    if pref and "XXXX" not in pref:
+        if pref not in managed_accounts:
+            raise RuntimeError(
+                f"Configured IB account '{pref}' was not found in available accounts: {managed_accounts}"
+            )
+        return pref
+    return managed_accounts[0]
+
+
 class IBClient:
     def __init__(self, config: IBConfig) -> None:
         self.config = config
         self.ib = IB()
+        self.account: str | None = None
 
     def connect(self) -> None:
         self.ib.connect(self.config.host, self.config.port, clientId=self.config.client_id, timeout=10)
+        self.account = self._select_account()
 
     def disconnect(self) -> None:
         if self.ib.isConnected():
@@ -30,10 +43,36 @@ class IBClient:
     def is_connected(self) -> bool:
         return self.ib.isConnected()
 
+    def _select_account(self) -> str:
+        preferred = (self.config.account or "").strip()
+        managed_accounts: list[str] = []
+
+        try:
+            managed_accounts = list(self.ib.managedAccounts())
+        except Exception:  # noqa: BLE001
+            managed_accounts = []
+
+        if not managed_accounts:
+            managed_accounts = list(getattr(self.ib.wrapper, "accounts", []))
+
+        if not managed_accounts:
+            summary = self.ib.accountSummary()
+            managed_accounts = sorted({str(item.account) for item in summary if getattr(item, "account", "")})
+
+        if not managed_accounts:
+            raise RuntimeError("Unable to detect any available IB accounts after connection")
+        return choose_account(preferred, managed_accounts)
+
+    def get_active_account(self) -> str:
+        if not self.account:
+            raise RuntimeError("IB account not selected; connect first")
+        return self.account
+
     def get_equity(self) -> float:
-        summary = self.ib.accountSummary(account=self.config.account)
+        account = self.get_active_account()
+        summary = self.ib.accountSummary(account=account)
         for item in summary:
-            if item.tag == "NetLiquidation" and item.account == self.config.account:
+            if item.tag == "NetLiquidation" and item.account == account:
                 return float(item.value)
         for item in summary:
             if item.tag == "NetLiquidation":
@@ -41,8 +80,11 @@ class IBClient:
         raise RuntimeError("Unable to read NetLiquidation from account summary")
 
     def get_positions(self) -> dict[str, PositionInfo]:
+        account = self.get_active_account()
         out: dict[str, PositionInfo] = {}
         for pos in self.ib.positions():
+            if getattr(pos, "account", "") != account:
+                continue
             symbol = pos.contract.symbol
             out[symbol] = PositionInfo(symbol=symbol, quantity=float(pos.position), avg_cost=float(pos.avgCost))
         return out
