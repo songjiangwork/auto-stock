@@ -47,6 +47,11 @@ autostock -c config/config.yaml backtest --ticker TSLA
 autostock -c config/config.yaml report
 ```
 
+## Testing
+```bash
+.venv\Scripts\python -m pytest -q
+```
+
 ## Notes
 - The process trades only during regular US market hours (Mon-Fri, 09:30-16:00 America/New_York).
 - `data/autostock.db` stores orders, snapshots, and events.
