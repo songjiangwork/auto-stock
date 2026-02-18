@@ -82,6 +82,10 @@ autostock -c config/config.yaml report
 ## Notes
 - The process trades only during regular US market hours (Mon-Fri, 09:30-16:00 America/New_York).
 - `data/autostock.db` stores orders, snapshots, and events.
+- On startup, the engine performs broker sync:
+  - Pulls new IB executions since the last local execution timestamp.
+  - Upserts executions into local ledger and rebuilds daily symbol realized PnL and consecutive-loss state.
+  - Uses IB positions as the source of truth for current holdings.
 - `backtest` always runs two scenarios in one command:
   - `60 D + 5 mins`
   - `2 Y + 1 day`

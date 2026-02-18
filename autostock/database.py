@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 def utc_now_iso() -> str:
@@ -56,6 +58,18 @@ class Database:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS executions (
+                exec_id TEXT PRIMARY KEY,
+                ts_utc TEXT NOT NULL,
+                account TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                price REAL NOT NULL,
+                order_id INTEGER,
+                perm_id INTEGER
+            );
             """
         )
         self.conn.commit()
@@ -106,11 +120,104 @@ class Database:
         )
         self.conn.commit()
 
+    def delete_state_prefix(self, prefix: str) -> None:
+        self.conn.execute("DELETE FROM app_state WHERE key LIKE ?", (f"{prefix}%",))
+        self.conn.commit()
+
     def get_state(self, key: str, default: Any = None) -> Any:
         row = self.conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
         if row is None:
             return default
         return json.loads(row["value"])
+
+    def upsert_execution(
+        self,
+        exec_id: str,
+        ts_utc: str,
+        account: str,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        order_id: int | None,
+        perm_id: int | None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO executions (exec_id, ts_utc, account, symbol, side, quantity, price, order_id, perm_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(exec_id) DO UPDATE SET
+                ts_utc=excluded.ts_utc,
+                account=excluded.account,
+                symbol=excluded.symbol,
+                side=excluded.side,
+                quantity=excluded.quantity,
+                price=excluded.price,
+                order_id=excluded.order_id,
+                perm_id=excluded.perm_id
+            """,
+            (exec_id, ts_utc, account, symbol, side, quantity, price, order_id, perm_id),
+        )
+        self.conn.commit()
+
+    def latest_execution_ts(self) -> str | None:
+        row = self.conn.execute("SELECT MAX(ts_utc) AS ts FROM executions").fetchone()
+        if not row or row["ts"] is None:
+            return None
+        return str(row["ts"])
+
+    def executions_ordered(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM executions ORDER BY ts_utc ASC, exec_id ASC"
+        ).fetchall()
+
+    def rebuild_daily_risk_state(self, tz_name: str) -> tuple[dict[str, float], int]:
+        rows = self.executions_ordered()
+        if not rows:
+            return {}, 0
+
+        today = datetime.now(ZoneInfo(tz_name)).date().isoformat()
+        position_qty: dict[str, float] = defaultdict(float)
+        avg_cost: dict[str, float] = defaultdict(float)
+        symbol_realized_today: dict[str, float] = defaultdict(float)
+        consecutive_losses_today = 0
+
+        for row in rows:
+            symbol = str(row["symbol"])
+            side = str(row["side"]).upper()
+            qty = float(row["quantity"])
+            price = float(row["price"])
+            ts = datetime.fromisoformat(str(row["ts_utc"]))
+            trade_day = ts.astimezone(ZoneInfo(tz_name)).date().isoformat()
+
+            current_qty = position_qty[symbol]
+            current_avg = avg_cost[symbol]
+
+            if side in {"BUY", "BOT"}:
+                new_qty = current_qty + qty
+                if new_qty <= 0:
+                    position_qty[symbol] = 0.0
+                    avg_cost[symbol] = 0.0
+                else:
+                    avg_cost[symbol] = ((current_qty * current_avg) + (qty * price)) / new_qty
+                    position_qty[symbol] = new_qty
+                continue
+
+            if side in {"SELL", "SLD"}:
+                sell_qty = min(current_qty, qty) if current_qty > 0 else qty
+                realized = (price - current_avg) * sell_qty
+                position_qty[symbol] = max(0.0, current_qty - qty)
+                if position_qty[symbol] == 0:
+                    avg_cost[symbol] = 0.0
+                if trade_day == today:
+                    symbol_realized_today[symbol] += realized
+                    if realized < 0:
+                        consecutive_losses_today += 1
+                    else:
+                        consecutive_losses_today = 0
+                continue
+
+        return dict(symbol_realized_today), consecutive_losses_today
 
     def latest_snapshots(self) -> list[sqlite3.Row]:
         return self.conn.execute(

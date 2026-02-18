@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Iterable
 
-from ib_insync import IB, MarketOrder, Stock
+from ib_insync import IB, ExecutionFilter, MarketOrder, Stock
 
 from autostock.config import IBConfig
 
@@ -13,6 +14,19 @@ class PositionInfo:
     symbol: str
     quantity: float
     avg_cost: float
+
+
+@dataclass(slots=True)
+class ExecutionInfo:
+    exec_id: str
+    ts_utc: str
+    account: str
+    symbol: str
+    side: str
+    quantity: float
+    price: float
+    order_id: int | None
+    perm_id: int | None
 
 
 def choose_account(preferred: str, managed_accounts: list[str]) -> str:
@@ -148,6 +162,40 @@ class IBClient:
     def ensure_symbols(self, symbols: Iterable[str]) -> None:
         contracts = [Stock(sym, "SMART", "USD") for sym in symbols]
         self.ib.qualifyContracts(*contracts)
+
+    def get_executions_since(self, since_utc_iso: str | None = None) -> list[ExecutionInfo]:
+        account = self.get_active_account()
+        filter_ = ExecutionFilter(acctCode=account)
+        if since_utc_iso:
+            since_dt = datetime.fromisoformat(since_utc_iso)
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=UTC)
+            since_dt = since_dt.astimezone()
+            filter_.time = since_dt.strftime("%Y%m%d %H:%M:%S")
+        fills = self.ib.reqExecutions(filter_)
+
+        out: list[ExecutionInfo] = []
+        for fill in fills:
+            exec_ = fill.execution
+            contract = fill.contract
+            exec_time = exec_.time
+            if exec_time.tzinfo is None:
+                exec_time = exec_time.replace(tzinfo=UTC)
+            ts_utc = exec_time.astimezone(UTC).isoformat()
+            out.append(
+                ExecutionInfo(
+                    exec_id=str(exec_.execId),
+                    ts_utc=ts_utc,
+                    account=str(exec_.acctNumber),
+                    symbol=str(contract.symbol),
+                    side=str(exec_.side).upper(),
+                    quantity=float(exec_.shares),
+                    price=float(exec_.price),
+                    order_id=int(exec_.orderId) if exec_.orderId is not None else None,
+                    perm_id=int(exec_.permId) if exec_.permId is not None else None,
+                )
+            )
+        return out
 
 
 @dataclass(slots=True)

@@ -63,6 +63,12 @@ def _add_symbol_realized_pnl(ctx: EngineContext, symbol: str, delta: float) -> N
     ctx.db.set_state(key, existing + delta)
 
 
+def _set_symbol_realized_pnl_today(ctx: EngineContext, symbol: str, value: float) -> None:
+    day_key = _today_key(ctx.config.timezone)
+    key = f"symbol_realized:{day_key}:{symbol}"
+    ctx.db.set_state(key, float(value))
+
+
 def _mark_event(ctx: EngineContext, level: str, message: str) -> None:
     ctx.db.log_event(level, message)
     print(f"[{level}] {message}")
@@ -84,6 +90,43 @@ def _update_consecutive_losses_after_exit(ctx: EngineContext, realized_pnl: floa
         _set_consecutive_losses_today(ctx, current + 1)
     else:
         _set_consecutive_losses_today(ctx, 0)
+
+
+def _startup_sync(ctx: EngineContext) -> None:
+    last_sync = ctx.db.latest_execution_ts()
+    executions = ctx.broker.get_executions_since(last_sync)
+    new_count = 0
+    for exe in executions:
+        ctx.db.upsert_execution(
+            exec_id=exe.exec_id,
+            ts_utc=exe.ts_utc,
+            account=exe.account,
+            symbol=exe.symbol,
+            side=exe.side,
+            quantity=exe.quantity,
+            price=exe.price,
+            order_id=exe.order_id,
+            perm_id=exe.perm_id,
+        )
+        new_count += 1
+
+    symbol_pnl, consecutive_losses = ctx.db.rebuild_daily_risk_state(ctx.config.timezone)
+    day_key = _today_key(ctx.config.timezone)
+    ctx.db.delete_state_prefix(f"symbol_realized:{day_key}:")
+    for symbol, pnl in symbol_pnl.items():
+        _set_symbol_realized_pnl_today(ctx, symbol, pnl)
+    _set_consecutive_losses_today(ctx, consecutive_losses)
+
+    positions = ctx.broker.get_positions()
+    position_symbols = sorted(symbol for symbol, p in positions.items() if p.quantity > 0)
+    _mark_event(
+        ctx,
+        "INFO",
+        (
+            f"startup sync completed: executions_fetched={new_count}, "
+            f"open_positions={len(position_symbols)}, consecutive_losses_today={consecutive_losses}"
+        ),
+    )
 
 
 def _execute_symbol(ctx: EngineContext, symbol: str, equity: float, positions: dict[str, PositionInfo]) -> None:
@@ -164,6 +207,7 @@ def run_loop(config: AppConfig, db: Database, broker: IBClient, risk: RiskManage
     signal.signal(signal.SIGTERM, _shutdown_handler)
 
     _mark_event(ctx, "INFO", "autostock engine started")
+    _startup_sync(ctx)
     while not ctx.shutdown:
         try:
             if not us_market_is_open(config.timezone):
