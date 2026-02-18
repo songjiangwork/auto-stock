@@ -29,6 +29,14 @@ class ExecutionInfo:
     perm_id: int | None
 
 
+def close_order_for_position(quantity: float) -> tuple[str, int]:
+    if quantity == 0:
+        raise ValueError("cannot close a zero position")
+    if quantity > 0:
+        return "SELL", int(abs(quantity))
+    return "BUY", int(abs(quantity))
+
+
 def choose_account(preferred: str, managed_accounts: list[str]) -> str:
     pref = (preferred or "").strip()
     if pref and "XXXX" not in pref:
@@ -158,6 +166,10 @@ class IBClient:
         trade = self.ib.placeOrder(contract, order)
         self.ib.sleep(1.0)
         return str(trade.orderStatus.status)
+
+    def close_position(self, symbol: str, quantity: float) -> str:
+        side, qty = close_order_for_position(quantity)
+        return self.submit_market_order(symbol, side, qty)
 
     def ensure_symbols(self, symbols: Iterable[str]) -> None:
         contracts = [Stock(sym, "SMART", "USD") for sym in symbols]

@@ -67,6 +67,8 @@ pip install -e .
 ```bash
 autostock -c config/config.yaml doctor
 autostock -c config/config.yaml run
+autostock -c config/config.yaml flatten --dry-run
+autostock -c config/config.yaml flatten --ticker QCOM
 autostock -c config/config.yaml status
 autostock -c config/config.yaml backtest
 autostock -c config/config.yaml backtest --initial-capital 120000
@@ -82,6 +84,10 @@ autostock -c config/config.yaml report
 ## Notes
 - The process trades only during regular US market hours (Mon-Fri, 09:30-16:00 America/New_York).
 - `data/autostock.db` stores orders, snapshots, and events.
+- `flatten` closes positions on the selected IB account:
+  - no ticker: close all open positions
+  - `--ticker`: close one symbol only
+  - `--dry-run`: preview orders without submitting
 - On startup, the engine performs broker sync:
   - Pulls new IB executions since the last local execution timestamp.
   - Upserts executions into local ledger and rebuilds daily symbol realized PnL and consecutive-loss state.

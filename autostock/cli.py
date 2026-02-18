@@ -22,6 +22,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="Check config, DB, and IB connectivity")
     sub.add_parser("run", help="Run strategy loop as a long-running process")
+    flatten_parser = sub.add_parser("flatten", help="Close existing positions for current IB account")
+    flatten_parser.add_argument(
+        "--ticker",
+        default="",
+        help="Optional single ticker to close. If omitted, all open positions are closed.",
+    )
+    flatten_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview close orders without sending them.",
+    )
     sub.add_parser("status", help="Show latest local snapshots")
     sub.add_parser("report", help="Show last 24h local report")
     backtest_parser = sub.add_parser("backtest", help="Run MA crossover backtest using IB historical bars")
@@ -86,6 +97,39 @@ def _status(config_path: str) -> int:
         print(render_status(db))
     finally:
         db.close()
+    return 0
+
+
+def _flatten(config_path: str, ticker: str, dry_run: bool) -> int:
+    config = load_config(config_path)
+    broker = IBClient(config.ib)
+    try:
+        broker.connect()
+        account = broker.get_active_account()
+        positions = broker.get_positions()
+
+        target = ticker.strip().upper()
+        to_close = [
+            pos
+            for symbol, pos in positions.items()
+            if pos.quantity != 0 and (not target or symbol == target)
+        ]
+        if not to_close:
+            print("No matching open positions to close.")
+            return 0
+
+        print(f"Selected account: {account}")
+        print(f"Positions to close: {len(to_close)}")
+        for pos in sorted(to_close, key=lambda x: x.symbol):
+            side = "SELL" if pos.quantity > 0 else "BUY"
+            qty = int(abs(pos.quantity))
+            if dry_run:
+                print(f"[DRY-RUN] {pos.symbol}: {side} {qty}")
+                continue
+            status = broker.close_position(pos.symbol, pos.quantity)
+            print(f"{pos.symbol}: {side} {qty} -> {status}")
+    finally:
+        broker.disconnect()
     return 0
 
 
@@ -270,6 +314,8 @@ def main() -> int:
         return _doctor(args.config)
     if cmd == "run":
         return _run(args.config)
+    if cmd == "flatten":
+        return _flatten(args.config, args.ticker, args.dry_run)
     if cmd == "status":
         return _status(args.config)
     if cmd == "report":
