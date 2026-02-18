@@ -68,6 +68,24 @@ def _mark_event(ctx: EngineContext, level: str, message: str) -> None:
     print(f"[{level}] {message}")
 
 
+def _consecutive_losses_today(ctx: EngineContext) -> int:
+    day_key = _today_key(ctx.config.timezone)
+    return int(ctx.db.get_state(f"consecutive_losses:{day_key}", 0))
+
+
+def _set_consecutive_losses_today(ctx: EngineContext, value: int) -> None:
+    day_key = _today_key(ctx.config.timezone)
+    ctx.db.set_state(f"consecutive_losses:{day_key}", int(max(0, value)))
+
+
+def _update_consecutive_losses_after_exit(ctx: EngineContext, realized_pnl: float) -> None:
+    current = _consecutive_losses_today(ctx)
+    if realized_pnl < 0:
+        _set_consecutive_losses_today(ctx, current + 1)
+    else:
+        _set_consecutive_losses_today(ctx, 0)
+
+
 def _execute_symbol(ctx: EngineContext, symbol: str, equity: float, positions: dict[str, PositionInfo]) -> None:
     closes = ctx.broker.get_recent_closes(
         symbol=symbol,
@@ -91,6 +109,7 @@ def _execute_symbol(ctx: EngineContext, symbol: str, equity: float, positions: d
         qty = int(position.quantity)
         status = ctx.broker.submit_market_order(symbol, "SELL", qty)
         approx_realized = (last_price - position.avg_cost) * qty
+        _update_consecutive_losses_after_exit(ctx, approx_realized)
         _add_symbol_realized_pnl(ctx, symbol, approx_realized)
         ctx.db.record_order(symbol, "SELL", qty, "STOP_LOSS", status, price=last_price)
         _mark_event(ctx, "INFO", f"{symbol}: stop loss triggered, sold {qty} @ {last_price:.2f}")
@@ -99,7 +118,15 @@ def _execute_symbol(ctx: EngineContext, symbol: str, equity: float, positions: d
     if signal_ == Signal.BUY and position.quantity <= 0:
         day_start = _ensure_day_start_equity(ctx, equity)
         symbol_pnl = _symbol_realized_pnl_today(ctx, symbol)
-        decision = ctx.risk.evaluate_entry_guards(equity, day_start, symbol_pnl)
+        open_positions = sum(1 for p in positions.values() if p.quantity > 0)
+        consecutive_losses = _consecutive_losses_today(ctx)
+        decision = ctx.risk.evaluate_entry_guards(
+            equity,
+            day_start,
+            symbol_pnl,
+            open_positions=open_positions,
+            consecutive_losses=consecutive_losses,
+        )
         if not decision.allow_new_position:
             _mark_event(ctx, "WARN", f"{symbol}: entry blocked by risk guard: {decision.reason}")
             return
@@ -116,6 +143,7 @@ def _execute_symbol(ctx: EngineContext, symbol: str, equity: float, positions: d
         qty = int(position.quantity)
         status = ctx.broker.submit_market_order(symbol, "SELL", qty)
         approx_realized = (last_price - position.avg_cost) * qty
+        _update_consecutive_losses_after_exit(ctx, approx_realized)
         _add_symbol_realized_pnl(ctx, symbol, approx_realized)
         ctx.db.record_order(symbol, "SELL", qty, "STRATEGY_SELL", status, price=last_price, note=decision_detail)
         _mark_event(ctx, "INFO", f"{symbol}: SELL {qty} @ {last_price:.2f} ({status}) [{decision_detail}]")

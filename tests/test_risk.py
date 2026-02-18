@@ -54,3 +54,27 @@ def test_evaluate_entry_guards_allows_when_within_limits() -> None:
         symbol_realized_pnl=-500.0,
     )
     assert decision.allow_new_position
+
+
+def test_evaluate_entry_guards_blocks_max_open_positions() -> None:
+    risk = _risk_manager()
+    decision = risk.evaluate_entry_guards(
+        current_equity=100_000.0,
+        day_start_equity=100_000.0,
+        symbol_realized_pnl=0.0,
+        open_positions=10,
+    )
+    assert not decision.allow_new_position
+    assert "max open positions" in decision.reason
+
+
+def test_evaluate_entry_guards_blocks_consecutive_losses() -> None:
+    risk = _risk_manager()
+    decision = risk.evaluate_entry_guards(
+        current_equity=100_000.0,
+        day_start_equity=100_000.0,
+        symbol_realized_pnl=0.0,
+        consecutive_losses=3,
+    )
+    assert not decision.allow_new_position
+    assert "circuit breaker" in decision.reason

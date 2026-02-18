@@ -121,39 +121,22 @@ def _export_backtest_artifacts(
     results_1d: list,
     timestamp: str,
     initial_capital: float,
+    config,
 ) -> None:
     by_symbol_5m = {r.symbol: r for r in results_5m}
     by_symbol_1d = {r.symbol: r for r in results_1d}
     symbols = sorted(set(by_symbol_5m) | set(by_symbol_1d))
-
-    for symbol in symbols:
-        symbol_dir = Path("data") / "backtests" / symbol / timestamp
-        symbol_dir.mkdir(parents=True, exist_ok=True)
-
-        res_5m = by_symbol_5m.get(symbol)
-        res_1d = by_symbol_1d.get(symbol)
-        if res_5m is not None:
-            path_5m = export_backtest_trades(
-                [res_5m],
-                str(symbol_dir / "5min.csv"),
-                initial_capital=initial_capital,
-            )
-            print(f"Trades exported: {path_5m}")
-        if res_1d is not None:
-            path_1d = export_backtest_trades(
-                [res_1d],
-                str(symbol_dir / "1d.csv"),
-                initial_capital=initial_capital,
-            )
-            print(f"Trades exported: {path_1d}")
-
-        summary_path = symbol_dir / "summary.csv"
-        with summary_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(
+    master_path = Path("data") / "backtests" / "_master_summary.csv"
+    write_master_header = not master_path.exists()
+    master_path.parent.mkdir(parents=True, exist_ok=True)
+    with master_path.open("a", newline="", encoding="utf-8") as master_f:
+        master_writer = csv.writer(master_f)
+        if write_master_header:
+            master_writer.writerow(
                 [
-                    "scenario",
+                    "batch",
                     "symbol",
+                    "scenario",
                     "bars",
                     "trades",
                     "wins",
@@ -163,14 +146,58 @@ def _export_backtest_artifacts(
                     "return_pct",
                     "max_drawdown_pct",
                     "initial_capital",
+                    "combination_mode",
+                    "enabled_strategies",
+                    "decision_threshold",
+                    "slippage_bps",
+                    "commission_per_order",
                 ]
             )
-            for scenario_name, res in [("5min", res_5m), ("1d", res_1d)]:
-                if res is None:
-                    continue
-                win_rate = (res.wins / res.trades * 100.0) if res.trades else 0.0
+
+        for symbol in symbols:
+            symbol_dir = Path("data") / "backtests" / symbol / timestamp
+            symbol_dir.mkdir(parents=True, exist_ok=True)
+
+            res_5m = by_symbol_5m.get(symbol)
+            res_1d = by_symbol_1d.get(symbol)
+            if res_5m is not None:
+                path_5m = export_backtest_trades(
+                    [res_5m],
+                    str(symbol_dir / "5min.csv"),
+                    initial_capital=initial_capital,
+                )
+                print(f"Trades exported: {path_5m}")
+            if res_1d is not None:
+                path_1d = export_backtest_trades(
+                    [res_1d],
+                    str(symbol_dir / "1d.csv"),
+                    initial_capital=initial_capital,
+                )
+                print(f"Trades exported: {path_1d}")
+
+            summary_path = symbol_dir / "summary.csv"
+            with summary_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
                 writer.writerow(
                     [
+                        "scenario",
+                        "symbol",
+                        "bars",
+                        "trades",
+                        "wins",
+                        "losses",
+                        "win_rate_pct",
+                        "pnl",
+                        "return_pct",
+                        "max_drawdown_pct",
+                        "initial_capital",
+                    ]
+                )
+                for scenario_name, res in [("5min", res_5m), ("1d", res_1d)]:
+                    if res is None:
+                        continue
+                    win_rate = (res.wins / res.trades * 100.0) if res.trades else 0.0
+                    row = [
                         scenario_name,
                         res.symbol,
                         res.bars,
@@ -183,8 +210,19 @@ def _export_backtest_artifacts(
                         f"{res.max_drawdown_pct*100:.4f}",
                         f"{initial_capital:.2f}",
                     ]
-                )
-        print(f"Summary exported: {summary_path}")
+                    writer.writerow(row)
+                    master_writer.writerow(
+                        row
+                        + [
+                            config.strategy_combo.combination_mode,
+                            ";".join(config.strategy_combo.enabled_strategies),
+                            f"{config.strategy_combo.decision_threshold:.4f}",
+                            f"{config.backtest.slippage_bps:.4f}",
+                            f"{config.backtest.commission_per_order:.4f}",
+                        ]
+                    )
+            print(f"Summary exported: {summary_path}")
+    print(f"Master summary updated: {master_path}")
 
 
 def _backtest(config_path: str, initial_capital: float, ticker: str) -> int:
@@ -219,7 +257,7 @@ def _backtest(config_path: str, initial_capital: float, ticker: str) -> int:
     _print_backtest_block("Backtest results (2 Y + 1 day):", results_1d)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _export_backtest_artifacts(results_5m, results_1d, timestamp, initial_capital)
+    _export_backtest_artifacts(results_5m, results_1d, timestamp, initial_capital, config)
     return 0
 
 

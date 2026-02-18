@@ -13,6 +13,8 @@ class RiskConfig:
     stop_loss_pct: float
     symbol_daily_loss_pct: float
     account_daily_drawdown_pct: float
+    max_open_positions: int = 10
+    max_consecutive_losses: int = 3
 
 
 @dataclass(slots=True)
@@ -41,6 +43,13 @@ class StrategyComboConfig:
 
 
 @dataclass(slots=True)
+class BacktestConfig:
+    slippage_bps: float
+    commission_per_order: float
+    min_order_notional: float
+
+
+@dataclass(slots=True)
 class IBConfig:
     host: str
     port: int
@@ -55,6 +64,7 @@ class AppConfig:
     risk: RiskConfig
     strategy: StrategyConfig
     strategy_combo: StrategyComboConfig
+    backtest: BacktestConfig
     ib: IBConfig
     timezone: str
     database_path: str
@@ -77,6 +87,7 @@ def load_config(path: str | Path) -> AppConfig:
     ib_raw = _require(raw, "ib")
     combo_raw = dict(raw.get("strategy_combo", {}))
     rsi_raw = dict(combo_raw.get("rsi", {}))
+    backtest_raw = dict(raw.get("backtest", {}))
 
     return AppConfig(
         symbols=list(_require(raw, "symbols")),
@@ -85,6 +96,8 @@ def load_config(path: str | Path) -> AppConfig:
             stop_loss_pct=float(_require(risk_raw, "stop_loss_pct")),
             symbol_daily_loss_pct=float(_require(risk_raw, "symbol_daily_loss_pct")),
             account_daily_drawdown_pct=float(_require(risk_raw, "account_daily_drawdown_pct")),
+            max_open_positions=int(risk_raw.get("max_open_positions", 10)),
+            max_consecutive_losses=int(risk_raw.get("max_consecutive_losses", 3)),
         ),
         strategy=StrategyConfig(
             short_window=int(_require(strategy_raw, "short_window")),
@@ -103,6 +116,11 @@ def load_config(path: str | Path) -> AppConfig:
                 oversold=float(rsi_raw.get("oversold", 30.0)),
                 overbought=float(rsi_raw.get("overbought", 70.0)),
             ),
+        ),
+        backtest=BacktestConfig(
+            slippage_bps=float(backtest_raw.get("slippage_bps", 5.0)),
+            commission_per_order=float(backtest_raw.get("commission_per_order", 1.0)),
+            min_order_notional=float(backtest_raw.get("min_order_notional", 100.0)),
         ),
         ib=IBConfig(
             host=str(_require(ib_raw, "host")),

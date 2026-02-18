@@ -15,6 +15,8 @@ risk:
   stop_loss_pct: 0.08
   symbol_daily_loss_pct: 0.02
   account_daily_drawdown_pct: 0.05
+  max_open_positions: 5
+  max_consecutive_losses: 3
 
 strategy:
   short_window: 20
@@ -34,6 +36,11 @@ strategy_combo:
     window: 14
     oversold: 30
     overbought: 70
+
+backtest:
+  slippage_bps: 5.0
+  commission_per_order: 1.0
+  min_order_notional: 100.0
 
 ib:
   host: 127.0.0.1

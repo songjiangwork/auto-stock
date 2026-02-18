@@ -10,16 +10,15 @@ CLI-first proof-of-concept for automated US stock/ETF trading with:
 ## Scope (V1)
 - Instruments: US stocks/ETFs (options reserved for later)
 - Mode: IB paper trading only
-- Strategy: 20/50 MA crossover
-  - Live default timeframe: `2 Y` history with `1 day` bars
+- Strategy: configurable strategy composition (`ma` + optional `rsi`)
 - Runtime: long-running process (`autostock run`)
 - Risk:
   - Max 20% capital per symbol
   - 8% stop-loss per symbol
-  - ATR-based volatility position sizing (with 20% cap)
   - Symbol daily loss guard
   - Account daily drawdown guard
-  - Trend filter: allow new long entries only when `SPY > MA200`
+  - Max open positions guard
+  - Consecutive loss circuit breaker
 
 ## Strategy Composition
 - Strategies are config-driven under `strategy_combo`.
@@ -91,6 +90,11 @@ autostock -c config/config.yaml report
   - `data/backtests/<SYMBOL>/<YYYYMMDD_HHMMSS>/5min.csv`
   - `data/backtests/<SYMBOL>/<YYYYMMDD_HHMMSS>/1d.csv`
   - `data/backtests/<SYMBOL>/<YYYYMMDD_HHMMSS>/summary.csv`
+  - `data/backtests/_master_summary.csv` (cross-batch aggregate table)
+- `backtest` includes execution realism controls from config:
+  - `backtest.slippage_bps`
+  - `backtest.commission_per_order`
+  - `backtest.min_order_notional`
 - Exported CSV includes trade-level P/L and running totals:
   - `profit_loss_abs`, `profit_loss_pct`
   - `cum_profit_loss_abs`, `cum_profit_loss_pct`

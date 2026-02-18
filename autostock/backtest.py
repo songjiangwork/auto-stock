@@ -59,6 +59,13 @@ def _max_drawdown(equity_curve: list[float]) -> float:
     return max_dd
 
 
+def _slippage_multiplier(side: str, slippage_bps: float) -> float:
+    shift = slippage_bps / 10000.0
+    if side.upper() == "BUY":
+        return 1.0 + shift
+    return 1.0 - shift
+
+
 def run_backtest_for_symbol(
     config: AppConfig,
     broker: IBClient,
@@ -101,6 +108,7 @@ def run_backtest_for_symbol(
     wins = 0
     losses = 0
     equity_curve = [initial_capital]
+    consecutive_losses = 0
 
     for i in range(1, len(aligned_prices)):
         price = aligned_prices[i]
@@ -113,27 +121,36 @@ def run_backtest_for_symbol(
         stop_loss = in_position and price <= entry * (1 - config.risk.stop_loss_pct)
 
         if signal_ == Signal.BUY and not in_position:
+            if consecutive_losses >= config.risk.max_consecutive_losses:
+                continue
             budget = cash * config.risk.max_position_pct
-            order_shares = int(budget // price)
+            buy_fill = price * _slippage_multiplier("BUY", config.backtest.slippage_bps)
+            order_shares = int(budget // buy_fill)
             if order_shares > 0:
+                notional = order_shares * buy_fill
+                if notional < config.backtest.min_order_notional:
+                    continue
                 shares = order_shares
-                cash -= shares * price
-                entry = price
+                cash -= notional
+                cash -= config.backtest.commission_per_order
+                entry = buy_fill
                 entry_time = time_label
                 in_position = True
         elif in_position and (signal_ == Signal.SELL or stop_loss):
             exit_reason = "STOP_LOSS" if stop_loss else "STRATEGY_SELL"
-            cash += shares * price
-            trade_pnl = (price - entry) * shares
+            sell_fill = price * _slippage_multiplier("SELL", config.backtest.slippage_bps)
+            cash += shares * sell_fill
+            cash -= config.backtest.commission_per_order
+            trade_pnl = (sell_fill - entry) * shares - (2.0 * config.backtest.commission_per_order)
             realized_pnl += trade_pnl
-            return_pct = (price - entry) / entry if entry > 0 else 0.0
+            return_pct = (sell_fill - entry) / entry if entry > 0 else 0.0
             trades_detail.append(
                 BacktestTrade(
                     symbol=symbol,
                     entry_time=entry_time,
                     exit_time=time_label,
                     entry_price=entry,
-                    exit_price=price,
+                    exit_price=sell_fill,
                     shares=shares,
                     pnl=trade_pnl,
                     return_pct=return_pct,
@@ -142,8 +159,10 @@ def run_backtest_for_symbol(
             )
             if trade_pnl >= 0:
                 wins += 1
+                consecutive_losses = 0
             else:
                 losses += 1
+                consecutive_losses += 1
             shares = 0
             in_position = False
             entry = 0.0
@@ -154,17 +173,19 @@ def run_backtest_for_symbol(
     if in_position:
         final_price = aligned_prices[-1]
         final_time = aligned_bars[-1].date
-        cash += shares * final_price
-        trade_pnl = (final_price - entry) * shares
+        sell_fill = final_price * _slippage_multiplier("SELL", config.backtest.slippage_bps)
+        cash += shares * sell_fill
+        cash -= config.backtest.commission_per_order
+        trade_pnl = (sell_fill - entry) * shares - (2.0 * config.backtest.commission_per_order)
         realized_pnl += trade_pnl
-        return_pct = (final_price - entry) / entry if entry > 0 else 0.0
+        return_pct = (sell_fill - entry) / entry if entry > 0 else 0.0
         trades_detail.append(
             BacktestTrade(
                 symbol=symbol,
                 entry_time=entry_time,
                 exit_time=final_time,
                 entry_price=entry,
-                exit_price=final_price,
+                exit_price=sell_fill,
                 shares=shares,
                 pnl=trade_pnl,
                 return_pct=return_pct,

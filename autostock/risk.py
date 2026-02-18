@@ -32,6 +32,8 @@ class RiskManager:
         current_equity: float,
         day_start_equity: float,
         symbol_realized_pnl: float,
+        open_positions: int = 0,
+        consecutive_losses: int = 0,
     ) -> RiskDecision:
         if day_start_equity > 0:
             drawdown = (day_start_equity - current_equity) / day_start_equity
@@ -46,6 +48,21 @@ class RiskManager:
             return RiskDecision(
                 allow_new_position=False,
                 reason=f"symbol daily loss limit reached ({symbol_realized_pnl:.2f})",
+            )
+
+        if open_positions >= self.config.max_open_positions:
+            return RiskDecision(
+                allow_new_position=False,
+                reason=f"max open positions reached ({open_positions}/{self.config.max_open_positions})",
+            )
+
+        if consecutive_losses >= self.config.max_consecutive_losses:
+            return RiskDecision(
+                allow_new_position=False,
+                reason=(
+                    f"consecutive loss circuit breaker active "
+                    f"({consecutive_losses}/{self.config.max_consecutive_losses})"
+                ),
             )
 
         return RiskDecision(allow_new_position=True)
