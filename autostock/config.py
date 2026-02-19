@@ -43,6 +43,11 @@ class StrategyComboConfig:
 
 
 @dataclass(slots=True)
+class CapitalConfig:
+    max_deploy_usd: float
+
+
+@dataclass(slots=True)
 class BacktestConfig:
     slippage_bps: float
     commission_per_order: float
@@ -64,6 +69,7 @@ class AppConfig:
     risk: RiskConfig
     strategy: StrategyConfig
     strategy_combo: StrategyComboConfig
+    capital: CapitalConfig
     backtest: BacktestConfig
     ib: IBConfig
     timezone: str
@@ -87,6 +93,7 @@ def load_config(path: str | Path) -> AppConfig:
     ib_raw = _require(raw, "ib")
     combo_raw = dict(raw.get("strategy_combo", {}))
     rsi_raw = dict(combo_raw.get("rsi", {}))
+    capital_raw = dict(raw.get("capital", {}))
     backtest_raw = dict(raw.get("backtest", {}))
 
     return AppConfig(
@@ -116,6 +123,9 @@ def load_config(path: str | Path) -> AppConfig:
                 oversold=float(rsi_raw.get("oversold", 30.0)),
                 overbought=float(rsi_raw.get("overbought", 70.0)),
             ),
+        ),
+        capital=CapitalConfig(
+            max_deploy_usd=float(capital_raw.get("max_deploy_usd", 10000.0)),
         ),
         backtest=BacktestConfig(
             slippage_bps=float(backtest_raw.get("slippage_bps", 5.0)),

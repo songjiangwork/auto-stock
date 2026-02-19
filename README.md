@@ -12,6 +12,8 @@ CLI-first proof-of-concept for automated US stock/ETF trading with:
 - Mode: IB paper trading only
 - Strategy: configurable strategy composition (`ma` + optional `rsi`)
 - Runtime: long-running process (`autostock run`)
+- Capital control:
+  - `capital.max_deploy_usd` caps strategy deployable capital (default `10000` USD), independent of full IB paper balance.
 - Risk:
   - Max 20% capital per symbol
   - 8% stop-loss per symbol
@@ -80,6 +82,10 @@ Client ID behavior:
 - `run` uses configured `ib.client_id` from YAML.
 - `doctor` and `backtest` automatically use `ib.client_id + 1` so they can run in another terminal while `run` is active.
 - `flatten` uses configured `ib.client_id` by default; pass `--force` to use `ib.client_id + 1`.
+
+Capital behavior:
+- `run` uses `effective_equity = min(IB NetLiquidation, capital.max_deploy_usd)`.
+- `backtest` uses `capital.max_deploy_usd` by default, unless `--initial-capital` is provided.
 
 ## Testing
 ```bash

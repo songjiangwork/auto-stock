@@ -45,8 +45,8 @@ def _build_parser() -> argparse.ArgumentParser:
     backtest_parser.add_argument(
         "--initial-capital",
         type=float,
-        default=100000.0,
-        help="Initial capital per symbol for simulation (default: 100000)",
+        default=None,
+        help="Initial capital per symbol for simulation (default: uses capital.max_deploy_usd)",
     )
     backtest_parser.add_argument(
         "--ticker",
@@ -79,6 +79,7 @@ def _doctor(config_path: str) -> int:
     print("Config load: OK")
     print(f"Trading mode: {config.ib.trading_mode}")
     print(f"Symbols: {', '.join(config.symbols)}")
+    print(f"Capital cap: {config.capital.max_deploy_usd:.2f} USD")
     print(f"Market open now ({config.timezone}): {us_market_is_open(config.timezone)}")
     print(f"Database: OK ({config.database_path})")
 
@@ -289,9 +290,12 @@ def _export_backtest_artifacts(
     print(f"Master summary updated: {master_path}")
 
 
-def _backtest(config_path: str, initial_capital: float, ticker: str) -> int:
+def _backtest(config_path: str, initial_capital: float | None, ticker: str) -> int:
     config = load_config(config_path)
     selected_symbols = [ticker.strip().upper()] if ticker.strip() else config.symbols
+    effective_initial_capital = (
+        float(initial_capital) if initial_capital is not None else float(config.capital.max_deploy_usd)
+    )
 
     broker = _broker_for_command(config, sidecar_client=True)
     try:
@@ -300,7 +304,7 @@ def _backtest(config_path: str, initial_capital: float, ticker: str) -> int:
         results_5m = run_backtest(
             config,
             broker,
-            initial_capital=initial_capital,
+            initial_capital=effective_initial_capital,
             duration="60 D",
             bar_size="5 mins",
             symbols=selected_symbols,
@@ -308,7 +312,7 @@ def _backtest(config_path: str, initial_capital: float, ticker: str) -> int:
         results_1d = run_backtest(
             config,
             broker,
-            initial_capital=initial_capital,
+            initial_capital=effective_initial_capital,
             duration="2 Y",
             bar_size="1 day",
             symbols=selected_symbols,
@@ -316,12 +320,12 @@ def _backtest(config_path: str, initial_capital: float, ticker: str) -> int:
     finally:
         broker.disconnect()
 
-    print(f"Backtest initial capital per symbol: {initial_capital:.2f}")
+    print(f"Backtest initial capital per symbol: {effective_initial_capital:.2f}")
     _print_backtest_block("Backtest results (60 D + 5 mins):", results_5m)
     _print_backtest_block("Backtest results (2 Y + 1 day):", results_1d)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _export_backtest_artifacts(results_5m, results_1d, timestamp, initial_capital, config)
+    _export_backtest_artifacts(results_5m, results_1d, timestamp, effective_initial_capital, config)
     return 0
 
 

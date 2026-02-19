@@ -74,6 +74,13 @@ def _mark_event(ctx: EngineContext, level: str, message: str) -> None:
     print(f"[{level}] {message}")
 
 
+def _effective_equity(ctx: EngineContext, ib_equity: float) -> float:
+    cap = max(0.0, ctx.config.capital.max_deploy_usd)
+    if cap <= 0:
+        return ib_equity
+    return min(ib_equity, cap)
+
+
 def _consecutive_losses_today(ctx: EngineContext) -> int:
     day_key = _today_key(ctx.config.timezone)
     return int(ctx.db.get_state(f"consecutive_losses:{day_key}", 0))
@@ -208,6 +215,7 @@ def run_loop(config: AppConfig, db: Database, broker: IBClient, risk: RiskManage
 
     _mark_event(ctx, "INFO", "autostock engine started")
     _startup_sync(ctx)
+    warned_cap = False
     while not ctx.shutdown:
         try:
             if not us_market_is_open(config.timezone):
@@ -215,7 +223,19 @@ def run_loop(config: AppConfig, db: Database, broker: IBClient, risk: RiskManage
                 time.sleep(config.strategy.loop_interval_seconds)
                 continue
 
-            equity = broker.get_equity()
+            ib_equity = broker.get_equity()
+            equity = _effective_equity(ctx, ib_equity)
+            if not warned_cap and config.capital.max_deploy_usd > ib_equity:
+                _mark_event(
+                    ctx,
+                    "WARN",
+                    (
+                        f"capital.max_deploy_usd ({config.capital.max_deploy_usd:.2f}) "
+                        f"is above IB equity ({ib_equity:.2f}); using IB equity."
+                    ),
+                )
+                warned_cap = True
+
             _ensure_day_start_equity(ctx, equity)
             positions = broker.get_positions()
 
