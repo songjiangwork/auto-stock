@@ -75,6 +75,14 @@ def _mark_event(ctx: EngineContext, level: str, message: str) -> None:
     print(f"[{level}] [{ts}] {message}")
 
 
+def _sleep_interruptible(ctx: EngineContext, seconds: float) -> None:
+    remaining = max(0.0, float(seconds))
+    while remaining > 0 and not ctx.shutdown:
+        chunk = 1.0 if remaining > 1.0 else remaining
+        time.sleep(chunk)
+        remaining -= chunk
+
+
 def _effective_equity(ctx: EngineContext, ib_equity: float) -> float:
     cap = max(0.0, ctx.config.capital.max_deploy_usd)
     if cap <= 0:
@@ -210,6 +218,7 @@ def run_loop(config: AppConfig, db: Database, broker: IBClient, risk: RiskManage
         del _frame
         ctx.shutdown = True
         _mark_event(ctx, "INFO", f"received signal {sig}, shutting down")
+        _mark_event(ctx, "INFO", "shutdown requested: finishing current symbol operation, then exiting")
 
     signal.signal(signal.SIGINT, _shutdown_handler)
     signal.signal(signal.SIGTERM, _shutdown_handler)
@@ -221,7 +230,7 @@ def run_loop(config: AppConfig, db: Database, broker: IBClient, risk: RiskManage
         try:
             if not us_market_is_open(config.timezone):
                 _mark_event(ctx, "INFO", "market closed, sleeping")
-                time.sleep(config.strategy.loop_interval_seconds)
+                _sleep_interruptible(ctx, config.strategy.loop_interval_seconds)
                 continue
 
             ib_equity = broker.get_equity()
@@ -241,11 +250,15 @@ def run_loop(config: AppConfig, db: Database, broker: IBClient, risk: RiskManage
             positions = broker.get_positions()
 
             for symbol in config.symbols:
+                if ctx.shutdown:
+                    _mark_event(ctx, "INFO", "shutdown requested, stopping symbol processing")
+                    break
                 _execute_symbol(ctx, symbol, equity, positions)
 
         except Exception as exc:  # noqa: BLE001
             _mark_event(ctx, "ERROR", f"loop error: {exc}")
         finally:
-            time.sleep(config.strategy.loop_interval_seconds)
+            if not ctx.shutdown:
+                _sleep_interruptible(ctx, config.strategy.loop_interval_seconds)
 
     _mark_event(ctx, "INFO", f"engine stopped at {datetime.now(UTC).isoformat()}")

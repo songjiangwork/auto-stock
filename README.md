@@ -117,6 +117,9 @@ Capital behavior:
   - Pulls new IB executions since the last local execution timestamp.
   - Upserts executions into local ledger and rebuilds daily symbol realized PnL and consecutive-loss state.
   - Uses IB positions as the source of truth for current holdings.
+- Shutdown behavior:
+  - Press `Ctrl+C` to request graceful shutdown.
+  - The engine finishes the current in-flight symbol operation, then stops processing new symbols and exits without waiting a full loop interval.
 - `backtest` always runs two scenarios in one command:
   - `60 D + 5 mins`
   - `2 Y + 1 day`
