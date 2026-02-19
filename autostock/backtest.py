@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from autostock.config import AppConfig
 from autostock.ib_client import IBClient
 from autostock.strategy import Signal, evaluate_combined_signal
+
+
+def _log(message: str, level: str = "INFO") -> None:
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{level}] [{ts}] {message}")
 
 
 @dataclass(slots=True)
@@ -76,13 +82,19 @@ def run_backtest_for_symbol(
 ) -> BacktestResult:
     use_duration = duration or config.strategy.duration
     use_bar_size = bar_size or config.strategy.bar_size
+    _log(f"{symbol}: fetching bars (duration={use_duration}, bar_size={use_bar_size})")
     bars = broker.get_historical_bars(
         symbol=symbol,
         duration=use_duration,
         bar_size=use_bar_size,
     )
     closes = [bar.close for bar in bars]
+    if bars:
+        _log(f"{symbol}: bars_loaded={len(bars)}, first={bars[0].date}, last={bars[-1].date}")
+    else:
+        _log(f"{symbol}: bars_loaded=0")
     if len(closes) < 5:
+        _log(f"{symbol}: skipped (insufficient bars={len(closes)})")
         return BacktestResult(
             symbol=symbol,
             bars=len(closes),
@@ -109,6 +121,8 @@ def run_backtest_for_symbol(
     losses = 0
     equity_curve = [initial_capital]
     consecutive_losses = 0
+    blocked_by_consecutive = 0
+    blocked_by_min_notional = 0
 
     for i in range(1, len(aligned_prices)):
         price = aligned_prices[i]
@@ -122,6 +136,7 @@ def run_backtest_for_symbol(
 
         if signal_ == Signal.BUY and not in_position:
             if consecutive_losses >= config.risk.max_consecutive_losses:
+                blocked_by_consecutive += 1
                 continue
             budget = cash * config.risk.max_position_pct
             buy_fill = price * _slippage_multiplier("BUY", config.backtest.slippage_bps)
@@ -129,6 +144,7 @@ def run_backtest_for_symbol(
             if order_shares > 0:
                 notional = order_shares * buy_fill
                 if notional < config.backtest.min_order_notional:
+                    blocked_by_min_notional += 1
                     continue
                 shares = order_shares
                 cash -= notional
@@ -136,6 +152,10 @@ def run_backtest_for_symbol(
                 entry = buy_fill
                 entry_time = time_label
                 in_position = True
+                _log(
+                    f"{symbol}: BUY {shares} @ {entry:.2f} on {entry_time} "
+                    f"(cash={cash:.2f}, budget={budget:.2f})"
+                )
         elif in_position and (signal_ == Signal.SELL or stop_loss):
             exit_reason = "STOP_LOSS" if stop_loss else "STRATEGY_SELL"
             sell_fill = price * _slippage_multiplier("SELL", config.backtest.slippage_bps)
@@ -163,6 +183,10 @@ def run_backtest_for_symbol(
             else:
                 losses += 1
                 consecutive_losses += 1
+            _log(
+                f"{symbol}: {exit_reason} {shares} @ {sell_fill:.2f} on {time_label} "
+                f"(trade_pnl={trade_pnl:.2f}, cash={cash:.2f}, consecutive_losses={consecutive_losses})"
+            )
             shares = 0
             in_position = False
             entry = 0.0
@@ -197,9 +221,18 @@ def run_backtest_for_symbol(
         else:
             losses += 1
         equity_curve.append(cash)
+        _log(
+            f"{symbol}: FORCED_EXIT_END {shares} @ {sell_fill:.2f} on {final_time} "
+            f"(trade_pnl={trade_pnl:.2f}, cash={cash:.2f})"
+        )
 
     trades = len(trades_detail)
     return_pct = ((cash - initial_capital) / initial_capital) if initial_capital > 0 else 0.0
+    _log(
+        f"{symbol}: completed bars={len(closes)}, trades={trades}, wins={wins}, losses={losses}, "
+        f"pnl={realized_pnl:.2f}, return={return_pct*100:.2f}%, maxDD={_max_drawdown(equity_curve)*100:.2f}%, "
+        f"blocked_consecutive={blocked_by_consecutive}, blocked_min_notional={blocked_by_min_notional}"
+    )
 
     return BacktestResult(
         symbol=symbol,
@@ -223,7 +256,13 @@ def run_backtest(
     symbols: list[str] | None = None,
 ) -> list[BacktestResult]:
     symbol_list = symbols if symbols is not None else config.symbols
-    return [
+    use_duration = duration or config.strategy.duration
+    use_bar_size = bar_size or config.strategy.bar_size
+    _log(
+        f"batch start: symbols={len(symbol_list)}, duration={use_duration}, "
+        f"bar_size={use_bar_size}, initial_capital={initial_capital:.2f}"
+    )
+    results = [
         run_backtest_for_symbol(
             config,
             broker,
@@ -234,6 +273,13 @@ def run_backtest(
         )
         for symbol in symbol_list
     ]
+    summary = summarize_backtest(results)
+    _log(
+        f"batch end: symbols={summary.total_symbols}, trades={summary.total_trades}, "
+        f"total_pnl={summary.total_pnl:.2f}, avg_return={summary.avg_return_pct*100:.2f}%, "
+        f"avg_maxDD={summary.avg_max_drawdown_pct*100:.2f}%"
+    )
+    return results
 
 
 def summarize_backtest(results: list[BacktestResult]) -> BacktestSummary:

@@ -71,7 +71,8 @@ def _set_symbol_realized_pnl_today(ctx: EngineContext, symbol: str, value: float
 
 def _mark_event(ctx: EngineContext, level: str, message: str) -> None:
     ctx.db.log_event(level, message)
-    print(f"[{level}] {message}")
+    ts = now_in_tz(ctx.config.timezone).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{level}] [{ts}] {message}")
 
 
 def _effective_equity(ctx: EngineContext, ib_equity: float) -> float:
