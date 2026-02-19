@@ -1,6 +1,6 @@
 import pytest
 
-from autostock.ib_client import choose_account, close_order_for_position
+from autostock.ib_client import build_market_order, choose_account, close_order_for_position
 
 
 def test_choose_account_uses_first_when_preferred_empty() -> None:
@@ -31,3 +31,16 @@ def test_close_order_for_position_short_closes_with_buy() -> None:
 def test_close_order_for_position_zero_raises() -> None:
     with pytest.raises(ValueError):
         close_order_for_position(0.0)
+
+
+def test_build_market_order_sets_day_and_rth_defaults() -> None:
+    order = build_market_order("buy", 10)
+    assert order.action == "BUY"
+    assert order.totalQuantity == 10
+    assert order.tif == "DAY"
+    assert order.outsideRth is False
+
+
+def test_build_market_order_rejects_non_positive_quantity() -> None:
+    with pytest.raises(ValueError):
+        build_market_order("SELL", 0)

@@ -48,6 +48,16 @@ def choose_account(preferred: str, managed_accounts: list[str]) -> str:
     return managed_accounts[0]
 
 
+def build_market_order(side: str, quantity: int) -> MarketOrder:
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
+    order = MarketOrder(side.upper(), quantity)
+    # Set explicit TIF/RTH flags to avoid TWS preset rewrites and noisy warnings.
+    order.tif = "DAY"
+    order.outsideRth = False
+    return order
+
+
 class IBClient:
     def __init__(self, config: IBConfig) -> None:
         self.config = config
@@ -158,11 +168,9 @@ class IBClient:
         return out
 
     def submit_market_order(self, symbol: str, side: str, quantity: int) -> str:
-        if quantity <= 0:
-            raise ValueError("quantity must be positive")
         contract = Stock(symbol, "SMART", "USD")
         self.ib.qualifyContracts(contract)
-        order = MarketOrder(side.upper(), quantity)
+        order = build_market_order(side, quantity)
         trade = self.ib.placeOrder(contract, order)
         self.ib.sleep(1.0)
         return str(trade.orderStatus.status)

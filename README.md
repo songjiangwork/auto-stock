@@ -93,6 +93,7 @@ Client ID behavior:
   - no ticker: close all open positions
   - `--ticker`: close one symbol only
   - `--dry-run`: preview orders without submitting
+- Market orders are submitted with explicit `TIF=DAY` and `outsideRth=False` by default.
 - On startup, the engine performs broker sync:
   - Pulls new IB executions since the last local execution timestamp.
   - Upserts executions into local ledger and rebuilds daily symbol realized PnL and consecutive-loss state.
