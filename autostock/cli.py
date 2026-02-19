@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 import sys
 
 from autostock.backtest import export_backtest_trades, run_backtest, summarize_backtest
-from autostock.config import load_config
+from autostock.config import AppConfig, load_config
 from autostock.database import Database
 from autostock.engine import run_loop, us_market_is_open
 from autostock.ib_client import IBClient
@@ -33,6 +34,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Preview close orders without sending them.",
     )
+    flatten_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Use sidecar client_id (+1) for flatten; useful if run is active.",
+    )
     sub.add_parser("status", help="Show latest local snapshots")
     sub.add_parser("report", help="Show last 24h local report")
     backtest_parser = sub.add_parser("backtest", help="Run MA crossover backtest using IB historical bars")
@@ -50,11 +56,25 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def select_client_id(base_client_id: int, sidecar: bool) -> int:
+    return base_client_id + 1 if sidecar else base_client_id
+
+
+def flatten_uses_sidecar(force: bool) -> bool:
+    return force
+
+
+def _broker_for_command(config: AppConfig, sidecar_client: bool) -> IBClient:
+    client_id = select_client_id(config.ib.client_id, sidecar_client)
+    ib_cfg = replace(config.ib, client_id=client_id)
+    return IBClient(ib_cfg)
+
+
 def _doctor(config_path: str) -> int:
     config = load_config(config_path)
     db = Database(config.database_path)
     db.log_event("INFO", "doctor command started")
-    broker = IBClient(config.ib)
+    broker = _broker_for_command(config, sidecar_client=True)
 
     print("Config load: OK")
     print(f"Trading mode: {config.ib.trading_mode}")
@@ -79,7 +99,7 @@ def _doctor(config_path: str) -> int:
 def _run(config_path: str) -> int:
     config = load_config(config_path)
     db = Database(config.database_path)
-    broker = IBClient(config.ib)
+    broker = _broker_for_command(config, sidecar_client=False)
     risk = RiskManager(config.risk)
     try:
         broker.connect()
@@ -100,9 +120,9 @@ def _status(config_path: str) -> int:
     return 0
 
 
-def _flatten(config_path: str, ticker: str, dry_run: bool) -> int:
+def _flatten(config_path: str, ticker: str, dry_run: bool, force: bool) -> int:
     config = load_config(config_path)
-    broker = IBClient(config.ib)
+    broker = _broker_for_command(config, sidecar_client=flatten_uses_sidecar(force))
     try:
         broker.connect()
         account = broker.get_active_account()
@@ -273,7 +293,7 @@ def _backtest(config_path: str, initial_capital: float, ticker: str) -> int:
     config = load_config(config_path)
     selected_symbols = [ticker.strip().upper()] if ticker.strip() else config.symbols
 
-    broker = IBClient(config.ib)
+    broker = _broker_for_command(config, sidecar_client=True)
     try:
         broker.connect()
         broker.ensure_symbols(selected_symbols)
@@ -315,7 +335,7 @@ def main() -> int:
     if cmd == "run":
         return _run(args.config)
     if cmd == "flatten":
-        return _flatten(args.config, args.ticker, args.dry_run)
+        return _flatten(args.config, args.ticker, args.dry_run, args.force)
     if cmd == "status":
         return _status(args.config)
     if cmd == "report":

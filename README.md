@@ -76,6 +76,11 @@ autostock -c config/config.yaml backtest --ticker TSLA
 autostock -c config/config.yaml report
 ```
 
+Client ID behavior:
+- `run` uses configured `ib.client_id` from YAML.
+- `doctor` and `backtest` automatically use `ib.client_id + 1` so they can run in another terminal while `run` is active.
+- `flatten` uses configured `ib.client_id` by default; pass `--force` to use `ib.client_id + 1`.
+
 ## Testing
 ```bash
 .venv\Scripts\python -m pytest -q
