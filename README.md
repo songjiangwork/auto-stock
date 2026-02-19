@@ -65,17 +65,30 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+## Config Split
+- `config/config.yaml` is a shareable template.
+- Put personal symbols/strategy/risk/capital values in `config/config.local.yaml` (gitignored).
+- If you run without `-c`, the app loads layered config by default:
+  - base: `config/config.yaml`
+  - override: `config/config.local.yaml` (if present)
+- Run with local config:
+```bash
+autostock -c config/config.local.yaml doctor
+autostock -c config/config.local.yaml run
+autostock -c config/config.local.yaml backtest
+```
+
 ## Commands
 ```bash
-autostock -c config/config.yaml doctor
-autostock -c config/config.yaml run
-autostock -c config/config.yaml flatten --dry-run
-autostock -c config/config.yaml flatten --ticker QCOM
-autostock -c config/config.yaml status
-autostock -c config/config.yaml backtest
-autostock -c config/config.yaml backtest --initial-capital 120000
-autostock -c config/config.yaml backtest --ticker TSLA
-autostock -c config/config.yaml report
+autostock doctor
+autostock run
+autostock flatten --dry-run
+autostock flatten --ticker QCOM
+autostock status
+autostock backtest
+autostock backtest --initial-capital 120000
+autostock backtest --ticker TSLA
+autostock report
 ```
 
 Client ID behavior:

@@ -1,22 +1,8 @@
 symbols:
+  - SPY
+  - QQQ
+  - AAPL
   - MSFT
-  - NVDA
-  - TSLA
-  - META
-  - SOFI
-  - RGTI
-  - CCLD
-  - ISRG
-  - QCOM
-  - ALM
-  - AMD
-  - TQQQ
-  - SOXL
-  - AMZN
-  - COIN
-  - COST
-  - ET
-  - FTNT
 
 risk:
   max_position_pct: 0.20
@@ -27,16 +13,16 @@ risk:
   max_consecutive_losses: 3
 
 strategy:
-  short_window: 30
-  long_window: 120
-  bar_size: 1 hour
+  short_window: 20
+  long_window: 50
+  bar_size: 5 mins
   duration: 2 Y
-  loop_interval_seconds: 600
+  loop_interval_seconds: 60
 
 strategy_combo:
-  enabled_strategies: [ma, rsi]
+  enabled_strategies: [ma]
   combination_mode: weighted
-  decision_threshold: 0.6
+  decision_threshold: 0.0
   weights:
     ma: 1.0
     rsi: 0.6
@@ -46,12 +32,12 @@ strategy_combo:
     overbought: 70
 
 capital:
-  max_deploy_usd: 50000
+  max_deploy_usd: 10000
 
 backtest:
   slippage_bps: 5.0
   commission_per_order: 6.95
-  min_order_notional: 3000.0
+  min_order_notional: 100.0
 
 ib:
   host: 127.0.0.1

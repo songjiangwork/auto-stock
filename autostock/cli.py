@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from autostock.backtest import export_backtest_trades, run_backtest, summarize_backtest
-from autostock.config import AppConfig, load_config
+from autostock.config import AppConfig, load_config, load_default_config
 from autostock.database import Database
 from autostock.engine import run_loop, us_market_is_open
 from autostock.ib_client import IBClient
@@ -18,7 +18,12 @@ from autostock.risk import RiskManager
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="autostock", description="Automated trading CLI (POC)")
-    parser.add_argument("-c", "--config", default="config/config.yaml", help="Path to YAML config")
+    parser.add_argument(
+        "-c",
+        "--config",
+        default=None,
+        help="Optional path to YAML config. If omitted, loads config/config.yaml overlaid by config/config.local.yaml.",
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="Check config, DB, and IB connectivity")
@@ -70,8 +75,14 @@ def _broker_for_command(config: AppConfig, sidecar_client: bool) -> IBClient:
     return IBClient(ib_cfg)
 
 
+def _load_effective_config(config_path: str | None) -> AppConfig:
+    if config_path:
+        return load_config(config_path)
+    return load_default_config()
+
+
 def _doctor(config_path: str) -> int:
-    config = load_config(config_path)
+    config = _load_effective_config(config_path)
     db = Database(config.database_path)
     db.log_event("INFO", "doctor command started")
     broker = _broker_for_command(config, sidecar_client=True)
@@ -98,7 +109,7 @@ def _doctor(config_path: str) -> int:
 
 
 def _run(config_path: str) -> int:
-    config = load_config(config_path)
+    config = _load_effective_config(config_path)
     db = Database(config.database_path)
     broker = _broker_for_command(config, sidecar_client=False)
     risk = RiskManager(config.risk)
@@ -112,7 +123,7 @@ def _run(config_path: str) -> int:
 
 
 def _status(config_path: str) -> int:
-    config = load_config(config_path)
+    config = _load_effective_config(config_path)
     db = Database(config.database_path)
     try:
         print(render_status(db))
@@ -122,7 +133,7 @@ def _status(config_path: str) -> int:
 
 
 def _flatten(config_path: str, ticker: str, dry_run: bool, force: bool) -> int:
-    config = load_config(config_path)
+    config = _load_effective_config(config_path)
     broker = _broker_for_command(config, sidecar_client=flatten_uses_sidecar(force))
     try:
         broker.connect()
@@ -155,7 +166,7 @@ def _flatten(config_path: str, ticker: str, dry_run: bool, force: bool) -> int:
 
 
 def _report(config_path: str) -> int:
-    config = load_config(config_path)
+    config = _load_effective_config(config_path)
     db = Database(config.database_path)
     try:
         print(render_daily_report(db))
@@ -291,7 +302,7 @@ def _export_backtest_artifacts(
 
 
 def _backtest(config_path: str, initial_capital: float | None, ticker: str) -> int:
-    config = load_config(config_path)
+    config = _load_effective_config(config_path)
     selected_symbols = [ticker.strip().upper()] if ticker.strip() else config.symbols
     effective_initial_capital = (
         float(initial_capital) if initial_capital is not None else float(config.capital.max_deploy_usd)

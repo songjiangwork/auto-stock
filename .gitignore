@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 data/
 autostock.egg-info/
+config/*.local.yaml
