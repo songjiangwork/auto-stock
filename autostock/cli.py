@@ -58,6 +58,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional single ticker to backtest (e.g. TSLA). If omitted, all configured symbols are used.",
     )
+    backtest_parser.add_argument(
+        "--mode",
+        choices=["portfolio", "per-symbol"],
+        default=None,
+        help="Backtest capital mode (default: uses backtest.mode from config, which defaults to portfolio).",
+    )
     return parser
 
 
@@ -175,21 +181,30 @@ def _report(config_path: str) -> int:
     return 0
 
 
-def _print_backtest_block(title: str, results: list) -> None:
+def _print_backtest_block(title: str, results: list, mode: str, initial_capital: float) -> None:
     print(title)
     for res in results:
         win_rate = (res.wins / res.trades * 100.0) if res.trades else 0.0
+        return_label = "return_contribution" if mode == "portfolio" else "return"
         print(
             f"- {res.symbol}: bars={res.bars}, trades={res.trades}, wins={res.wins}, losses={res.losses}, "
-            f"win_rate={win_rate:.1f}%, pnl={res.pnl:.2f}, return={res.return_pct*100:.2f}%, "
+            f"win_rate={win_rate:.1f}%, pnl={res.pnl:.2f}, {return_label}={res.return_pct*100:.2f}%, "
             f"maxDD={res.max_drawdown_pct*100:.2f}%"
         )
     summary = summarize_backtest(results)
-    print(
-        f"Summary: symbols={summary.total_symbols}, total_trades={summary.total_trades}, "
-        f"total_pnl={summary.total_pnl:.2f}, avg_return={summary.avg_return_pct*100:.2f}%, "
-        f"avg_maxDD={summary.avg_max_drawdown_pct*100:.2f}%"
-    )
+    if mode == "portfolio":
+        portfolio_return_pct = (summary.total_pnl / initial_capital * 100.0) if initial_capital > 0 else 0.0
+        print(
+            f"Summary: symbols={summary.total_symbols}, total_trades={summary.total_trades}, "
+            f"total_pnl={summary.total_pnl:.2f}, portfolio_return={portfolio_return_pct:.2f}%, "
+            f"avg_symbol_maxDD={summary.avg_max_drawdown_pct*100:.2f}%"
+        )
+    else:
+        print(
+            f"Summary: symbols={summary.total_symbols}, total_trades={summary.total_trades}, "
+            f"total_pnl={summary.total_pnl:.2f}, avg_return={summary.avg_return_pct*100:.2f}%, "
+            f"avg_maxDD={summary.avg_max_drawdown_pct*100:.2f}%"
+        )
 
 
 def _export_backtest_artifacts(
@@ -197,6 +212,7 @@ def _export_backtest_artifacts(
     results_1d: list,
     timestamp: str,
     initial_capital: float,
+    mode: str,
     config,
 ) -> None:
     by_symbol_5m = {r.symbol: r for r in results_5m}
@@ -222,6 +238,7 @@ def _export_backtest_artifacts(
                     "return_pct",
                     "max_drawdown_pct",
                     "initial_capital",
+                    "backtest_mode",
                     "combination_mode",
                     "enabled_strategies",
                     "decision_threshold",
@@ -285,6 +302,7 @@ def _export_backtest_artifacts(
                         f"{res.return_pct*100:.4f}",
                         f"{res.max_drawdown_pct*100:.4f}",
                         f"{initial_capital:.2f}",
+                        mode,
                     ]
                     writer.writerow(row)
                     master_writer.writerow(
@@ -301,12 +319,13 @@ def _export_backtest_artifacts(
     print(f"Master summary updated: {master_path}")
 
 
-def _backtest(config_path: str, initial_capital: float | None, ticker: str) -> int:
+def _backtest(config_path: str, initial_capital: float | None, ticker: str, mode_override: str | None) -> int:
     config = _load_effective_config(config_path)
     selected_symbols = [ticker.strip().upper()] if ticker.strip() else config.symbols
     effective_initial_capital = (
         float(initial_capital) if initial_capital is not None else float(config.capital.max_deploy_usd)
     )
+    mode = str(mode_override or getattr(config.backtest, "mode", "portfolio")).lower()
 
     broker = _broker_for_command(config, sidecar_client=True)
     try:
@@ -319,6 +338,7 @@ def _backtest(config_path: str, initial_capital: float | None, ticker: str) -> i
             duration="60 D",
             bar_size="5 mins",
             symbols=selected_symbols,
+            mode=mode,
         )
         results_1d = run_backtest(
             config,
@@ -327,16 +347,21 @@ def _backtest(config_path: str, initial_capital: float | None, ticker: str) -> i
             duration="2 Y",
             bar_size="1 day",
             symbols=selected_symbols,
+            mode=mode,
         )
     finally:
         broker.disconnect()
 
-    print(f"Backtest initial capital per symbol: {effective_initial_capital:.2f}")
-    _print_backtest_block("Backtest results (60 D + 5 mins):", results_5m)
-    _print_backtest_block("Backtest results (2 Y + 1 day):", results_1d)
+    if mode == "portfolio":
+        print(f"Backtest initial portfolio capital: {effective_initial_capital:.2f}")
+    else:
+        print(f"Backtest initial capital per symbol: {effective_initial_capital:.2f}")
+    print(f"Backtest mode: {mode}")
+    _print_backtest_block("Backtest results (60 D + 5 mins):", results_5m, mode, effective_initial_capital)
+    _print_backtest_block("Backtest results (2 Y + 1 day):", results_1d, mode, effective_initial_capital)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _export_backtest_artifacts(results_5m, results_1d, timestamp, effective_initial_capital, config)
+    _export_backtest_artifacts(results_5m, results_1d, timestamp, effective_initial_capital, mode, config)
     return 0
 
 
@@ -356,7 +381,7 @@ def main() -> int:
     if cmd == "report":
         return _report(args.config)
     if cmd == "backtest":
-        return _backtest(args.config, args.initial_capital, args.ticker)
+        return _backtest(args.config, args.initial_capital, args.ticker, args.mode)
 
     parser.print_help()
     return 1

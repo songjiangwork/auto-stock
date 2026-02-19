@@ -52,6 +52,7 @@ class CapitalConfig:
 
 @dataclass(slots=True)
 class BacktestConfig:
+    mode: str
     slippage_bps: float
     commission_per_order: float
     min_order_notional: float
@@ -145,6 +146,7 @@ def load_config(path: str | Path) -> AppConfig:
             max_deploy_usd=float(capital_raw.get("max_deploy_usd", 10000.0)),
         ),
         backtest=BacktestConfig(
+            mode=str(backtest_raw.get("mode", "portfolio")).lower(),
             slippage_bps=float(backtest_raw.get("slippage_bps", 5.0)),
             commission_per_order=float(backtest_raw.get("commission_per_order", 1.0)),
             min_order_notional=float(backtest_raw.get("min_order_notional", 100.0)),
@@ -209,6 +211,7 @@ def load_default_config() -> AppConfig:
             max_deploy_usd=float(capital_raw.get("max_deploy_usd", 10000.0)),
         ),
         backtest=BacktestConfig(
+            mode=str(backtest_raw.get("mode", "portfolio")).lower(),
             slippage_bps=float(backtest_raw.get("slippage_bps", 5.0)),
             commission_per_order=float(backtest_raw.get("commission_per_order", 1.0)),
             min_order_notional=float(backtest_raw.get("min_order_notional", 100.0)),

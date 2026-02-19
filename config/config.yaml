@@ -35,6 +35,7 @@ capital:
   max_deploy_usd: 10000
 
 backtest:
+  mode: portfolio
   slippage_bps: 5.0
   commission_per_order: 6.95
   min_order_notional: 100.0

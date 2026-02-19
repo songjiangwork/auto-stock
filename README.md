@@ -88,6 +88,8 @@ autostock status
 autostock backtest
 autostock backtest --initial-capital 120000
 autostock backtest --ticker TSLA
+autostock backtest --mode portfolio
+autostock backtest --mode per-symbol
 autostock report
 ```
 
@@ -99,6 +101,9 @@ Client ID behavior:
 Capital behavior:
 - `run` uses `effective_equity = min(IB NetLiquidation, capital.max_deploy_usd)`.
 - `backtest` uses `capital.max_deploy_usd` by default, unless `--initial-capital` is provided.
+- `backtest.mode` controls capital model:
+  - `portfolio` (default): all symbols share one cash pool equal to initial capital.
+  - `per-symbol`: each symbol runs with its own independent initial capital.
 
 ## Testing
 ```bash
@@ -130,6 +135,7 @@ Capital behavior:
   - `data/backtests/<SYMBOL>/<YYYYMMDD_HHMMSS>/summary.csv`
   - `data/backtests/_master_summary.csv` (cross-batch aggregate table)
 - `backtest` includes execution realism controls from config:
+  - `backtest.mode`
   - `backtest.slippage_bps`
   - `backtest.commission_per_order`
   - `backtest.min_order_notional`
