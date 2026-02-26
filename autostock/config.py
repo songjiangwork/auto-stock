@@ -27,6 +27,9 @@ class StrategyConfig:
     bar_size: str
     duration: str
     loop_interval_seconds: int
+    data_poll_seconds: int | None = None
+    incremental_duration: str = "3 D"
+    cache_max_bars: int = 10000
 
 
 @dataclass(slots=True)
@@ -103,6 +106,15 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 def load_config(path: str | Path) -> AppConfig:
     raw = _load_yaml(path)
 
@@ -130,6 +142,9 @@ def load_config(path: str | Path) -> AppConfig:
             bar_size=str(_require(strategy_raw, "bar_size")),
             duration=str(_require(strategy_raw, "duration")),
             loop_interval_seconds=int(_require(strategy_raw, "loop_interval_seconds")),
+            data_poll_seconds=_optional_positive_int(strategy_raw.get("data_poll_seconds")),
+            incremental_duration=str(strategy_raw.get("incremental_duration", "3 D")),
+            cache_max_bars=max(500, int(strategy_raw.get("cache_max_bars", 10000))),
         ),
         strategy_combo=StrategyComboConfig(
             enabled_strategies=[str(x).lower() for x in combo_raw.get("enabled_strategies", ["ma"])],
@@ -195,6 +210,9 @@ def load_default_config() -> AppConfig:
             bar_size=str(_require(strategy_raw, "bar_size")),
             duration=str(_require(strategy_raw, "duration")),
             loop_interval_seconds=int(_require(strategy_raw, "loop_interval_seconds")),
+            data_poll_seconds=_optional_positive_int(strategy_raw.get("data_poll_seconds")),
+            incremental_duration=str(strategy_raw.get("incremental_duration", "3 D")),
+            cache_max_bars=max(500, int(strategy_raw.get("cache_max_bars", 10000))),
         ),
         strategy_combo=StrategyComboConfig(
             enabled_strategies=[str(x).lower() for x in combo_raw.get("enabled_strategies", ["ma"])],

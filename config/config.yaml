@@ -17,7 +17,10 @@ strategy:
   long_window: 50
   bar_size: 5 mins
   duration: 2 Y
+  incremental_duration: 3 D
+  cache_max_bars: 10000
   loop_interval_seconds: 60
+  data_poll_seconds: null
 
 strategy_combo:
   enabled_strategies: [ma]

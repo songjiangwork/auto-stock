@@ -122,6 +122,17 @@ Capital behavior:
   - Pulls new IB executions since the last local execution timestamp.
   - Upserts executions into local ledger and rebuilds daily symbol realized PnL and consecutive-loss state.
   - Uses IB positions as the source of truth for current holdings.
+- Run loop execution model:
+  - A background market-data feed (sidecar `client_id + 2`) fetches symbol bars and publishes update events.
+  - The main run loop consumes those events and executes analysis/order logic serially.
+  - If the feed cannot start, the engine automatically falls back to the original synchronous symbol loop.
+  - Feed poll interval is:
+    - `strategy.data_poll_seconds` when configured (must be `> 0`).
+    - Otherwise auto-derived as `bar_size / 2` (for example, `10 mins -> 300s`, `1 day -> 43200s`).
+  - Market data is cached locally at `data/cache/market_data/<SYMBOL>__<BAR_SIZE>__<DURATION>.json`.
+  - First fetch for a symbol uses `strategy.duration`; subsequent fetches derive a dynamic duration from `last_cached_bar_time -> now` (with overlap) and merge into cache.
+  - `strategy.incremental_duration` is used as a minimum floor for the dynamic incremental window.
+  - Cache size is bounded by `strategy.cache_max_bars`.
 - Shutdown behavior:
   - Press `Ctrl+C` to request graceful shutdown.
   - The engine finishes the current in-flight symbol operation, then stops processing new symbols and exits without waiting a full loop interval.
