@@ -140,12 +140,18 @@ class IBClient:
     def get_recent_closes(self, symbol: str, duration: str, bar_size: str) -> list[float]:
         return [row.close for row in self.get_historical_bars(symbol, duration, bar_size)]
 
-    def get_historical_bars(self, symbol: str, duration: str, bar_size: str) -> list["HistoricalBar"]:
+    def get_historical_bars(
+        self,
+        symbol: str,
+        duration: str,
+        bar_size: str,
+        end_datetime: str = "",
+    ) -> list["HistoricalBar"]:
         contract = Stock(symbol, "SMART", "USD")
         self.ib.qualifyContracts(contract)
         bars = self.ib.reqHistoricalData(
             contract,
-            endDateTime="",
+            endDateTime=end_datetime,
             durationStr=duration,
             barSizeSetting=bar_size,
             whatToShow="TRADES",

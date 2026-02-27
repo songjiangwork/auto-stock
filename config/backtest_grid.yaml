@@ -1,0 +1,12 @@
+parameters:
+  strategy.short_window: [20, 30]
+  strategy.long_window: [80, 120]
+  strategy_combo.decision_threshold: [0.4, 0.6]
+
+scenarios:
+  - name: 5min
+    duration: 2 Y
+    bar_size: 5 mins
+  - name: 1d
+    duration: 2 Y
+    bar_size: 1 day

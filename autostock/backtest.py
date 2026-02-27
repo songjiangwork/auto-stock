@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import csv
+import json
+import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from autostock.config import AppConfig
-from autostock.ib_client import IBClient
-from autostock.strategy import Signal, evaluate_combined_signal
+from autostock.ib_client import HistoricalBar, IBClient
+from autostock.strategy import Signal, evaluate_combined_signal_at
+
+MAX_BARS_PER_HISTORY_REQUEST = 10_000
+DEFAULT_BACKTEST_CACHE_TTL_HOURS = 24.0
+BACKTEST_CACHE_DIR = Path("data") / "cache" / "backtest"
+BACKTEST_PROGRESS_STEP_EVENTS = 50_000
 
 
 def _log(message: str, level: str = "INFO") -> None:
@@ -102,6 +109,230 @@ def _slippage_multiplier(side: str, slippage_bps: float) -> float:
     return 1.0 - shift
 
 
+def _safe_cache_token(text: str) -> str:
+    out = re.sub(r"[^a-zA-Z0-9]+", "_", str(text).strip().lower())
+    return out.strip("_") or "default"
+
+
+def _cache_file(cache_dir: Path, symbol: str, duration: str, bar_size: str) -> Path:
+    dur = _safe_cache_token(duration)
+    bar = _safe_cache_token(bar_size)
+    return cache_dir / f"{symbol.upper()}__{bar}__{dur}.json"
+
+
+def _cache_fresh(path: Path, ttl_hours: float) -> bool:
+    if not path.exists():
+        return False
+    age_seconds = (datetime.now(UTC) - datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)).total_seconds()
+    return age_seconds <= max(0.0, float(ttl_hours)) * 3600.0
+
+
+def _load_cached_bars(path: Path) -> list[HistoricalBar]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        bars_raw = raw.get("bars", [])
+        out: list[HistoricalBar] = []
+        for row in bars_raw:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                HistoricalBar(
+                    date=str(row.get("date", "")),
+                    open=float(row.get("open", 0.0)),
+                    high=float(row.get("high", 0.0)),
+                    low=float(row.get("low", 0.0)),
+                    close=float(row.get("close", 0.0)),
+                    volume=float(row.get("volume", 0.0)),
+                )
+            )
+        out.sort(key=lambda r: _date_sort_key(r.date))
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _save_cached_bars(path: Path, symbol: str, duration: str, bar_size: str, bars: list[HistoricalBar]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "symbol": symbol.upper(),
+        "duration": duration,
+        "bar_size": bar_size,
+        "saved_at_utc": datetime.now(UTC).isoformat(),
+        "bars": [
+            {
+                "date": b.date,
+                "open": b.open,
+                "high": b.high,
+                "low": b.low,
+                "close": b.close,
+                "volume": b.volume,
+            }
+            for b in bars
+        ],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+
+
+def _duration_to_seconds(duration: str) -> int:
+    parts = duration.strip().upper().split()
+    if len(parts) != 2:
+        raise ValueError(f"invalid duration: {duration}")
+    value = max(1, int(parts[0]))
+    unit = parts[1]
+    if unit == "S":
+        return value
+    if unit == "D":
+        return value * 86400
+    if unit == "W":
+        return value * 7 * 86400
+    if unit == "M":
+        return value * 30 * 86400
+    if unit == "Y":
+        return value * 365 * 86400
+    raise ValueError(f"invalid duration unit: {duration}")
+
+
+def _bar_size_to_seconds(bar_size: str) -> int:
+    text = bar_size.strip().lower()
+    parts = text.split()
+    if len(parts) < 2:
+        return 60
+    try:
+        value = max(1, int(parts[0]))
+    except ValueError:
+        return 60
+    unit = parts[1]
+    if unit.startswith("sec"):
+        return value
+    if unit.startswith("min"):
+        return value * 60
+    if unit.startswith("hour"):
+        return value * 3600
+    if unit.startswith("day"):
+        return value * 86400
+    return 60
+
+
+def _estimated_bars(duration: str, bar_size: str) -> int:
+    duration_seconds = _duration_to_seconds(duration)
+    bar_seconds = max(1, _bar_size_to_seconds(bar_size))
+    # Use calendar-time upper bound so we split conservatively for IB HMDS stability.
+    return max(1, duration_seconds // bar_seconds)
+
+
+def _seconds_to_duration(seconds: int) -> str:
+    sec = max(60, int(seconds))
+    if sec < 86400:
+        return f"{sec} S"
+    return f"{(sec + 86399) // 86400} D"
+
+
+def _parse_bar_datetime(value: str) -> datetime | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    for parser in (
+        datetime.fromisoformat,
+        lambda x: datetime.strptime(x, "%Y%m%d %H:%M:%S"),
+        lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S"),
+        lambda x: datetime.strptime(x, "%Y%m%d"),
+        lambda x: datetime.strptime(x, "%Y-%m-%d"),
+    ):
+        try:
+            return parser(text)
+        except ValueError:
+            continue
+    return None
+
+
+def _chunked_historical_bars(
+    broker: IBClient,
+    symbol: str,
+    duration: str,
+    bar_size: str,
+    max_bars_per_request: int = MAX_BARS_PER_HISTORY_REQUEST,
+) -> list[HistoricalBar]:
+    bar_seconds = max(1, _bar_size_to_seconds(bar_size))
+    chunk_seconds = max(bar_seconds * max_bars_per_request, bar_seconds * 10)
+    chunk_duration = _seconds_to_duration(chunk_seconds)
+    target_seconds = _duration_to_seconds(duration)
+    fetched_seconds = 0
+    end_time = datetime.now().strftime("%Y%m%d %H:%M:%S")
+    out: list[HistoricalBar] = []
+    seen_dates: set[str] = set()
+
+    while fetched_seconds < target_seconds:
+        batch = broker.get_historical_bars(symbol=symbol, duration=chunk_duration, bar_size=bar_size, end_datetime=end_time)
+        if not batch:
+            break
+        for row in batch:
+            key = str(row.date)
+            if key in seen_dates:
+                continue
+            seen_dates.add(key)
+            out.append(row)
+        oldest_dt = _parse_bar_datetime(str(batch[0].date))
+        if oldest_dt is None:
+            break
+        end_time = (oldest_dt.replace(microsecond=0) - timedelta(seconds=1)).strftime("%Y%m%d %H:%M:%S")
+        fetched_seconds += chunk_seconds
+
+    out.sort(key=lambda r: _date_sort_key(r.date))
+    return out
+
+
+def fetch_historical_bars_with_auto_split(
+    broker: IBClient,
+    symbol: str,
+    duration: str,
+    bar_size: str,
+    max_bars_per_request: int = MAX_BARS_PER_HISTORY_REQUEST,
+    cache_ttl_hours: float = DEFAULT_BACKTEST_CACHE_TTL_HOURS,
+    refresh_cache: bool = False,
+    cache_dir: Path = BACKTEST_CACHE_DIR,
+) -> list[HistoricalBar]:
+    cache_path = _cache_file(cache_dir, symbol, duration, bar_size)
+    if not refresh_cache and cache_ttl_hours > 0 and _cache_fresh(cache_path, cache_ttl_hours):
+        cached = _load_cached_bars(cache_path)
+        if cached:
+            _log(
+                f"{symbol}: backtest cache hit bars={len(cached)} path={cache_path}",
+                level="DEBUG",
+            )
+            return cached
+
+    estimated = _estimated_bars(duration, bar_size)
+    bars: list[HistoricalBar]
+    if estimated <= max_bars_per_request:
+        try:
+            bars = broker.get_historical_bars(symbol=symbol, duration=duration, bar_size=bar_size)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"{symbol}: direct history request failed ({exc}); retrying in chunks", level="WARN")
+            bars = _chunked_historical_bars(
+                broker,
+                symbol,
+                duration,
+                bar_size,
+                max_bars_per_request=max_bars_per_request,
+            )
+    else:
+        _log(
+            f"{symbol}: estimated_bars={estimated} exceeds threshold={max_bars_per_request}, using chunked history fetch",
+            level="INFO",
+        )
+        bars = _chunked_historical_bars(
+            broker,
+            symbol,
+            duration,
+            bar_size,
+            max_bars_per_request=max_bars_per_request,
+        )
+
+    if bars:
+        _save_cached_bars(cache_path, symbol, duration, bar_size, bars)
+    return bars
+
+
 def run_backtest_for_symbol(
     config: AppConfig,
     broker: IBClient,
@@ -109,14 +340,19 @@ def run_backtest_for_symbol(
     initial_capital: float,
     duration: str | None = None,
     bar_size: str | None = None,
+    cache_ttl_hours: float = DEFAULT_BACKTEST_CACHE_TTL_HOURS,
+    refresh_cache: bool = False,
 ) -> BacktestResult:
     use_duration = duration or config.strategy.duration
     use_bar_size = bar_size or config.strategy.bar_size
     _log(f"{symbol}: fetching bars (duration={use_duration}, bar_size={use_bar_size})")
-    bars = broker.get_historical_bars(
+    bars = fetch_historical_bars_with_auto_split(
+        broker=broker,
         symbol=symbol,
         duration=use_duration,
         bar_size=use_bar_size,
+        cache_ttl_hours=cache_ttl_hours,
+        refresh_cache=refresh_cache,
     )
     closes = [bar.close for bar in bars]
     if bars:
@@ -157,11 +393,7 @@ def run_backtest_for_symbol(
     for i in range(1, len(aligned_prices)):
         price = aligned_prices[i]
         time_label = aligned_bars[i].date
-        signal_, _detail = evaluate_combined_signal(
-            aligned_prices[: i + 1],
-            config.strategy,
-            config.strategy_combo,
-        )
+        signal_, _detail = evaluate_combined_signal_at(aligned_prices, i, config.strategy, config.strategy_combo)
         stop_loss = in_position and price <= entry * (1 - config.risk.stop_loss_pct)
 
         if signal_ == Signal.BUY and not in_position:
@@ -223,6 +455,11 @@ def run_backtest_for_symbol(
 
         current_equity = cash + (shares * price if in_position else 0.0)
         equity_curve.append(current_equity)
+        if i % BACKTEST_PROGRESS_STEP_EVENTS == 0:
+            _log(
+                f"{symbol}: progress {i}/{len(aligned_prices)-1} ({i*100.0/max(1, len(aligned_prices)-1):.1f}%)",
+                level="INFO",
+            )
 
     if in_position:
         final_price = aligned_prices[-1]
@@ -284,13 +521,22 @@ def _run_backtest_portfolio(
     duration: str,
     bar_size: str,
     symbols: list[str],
+    cache_ttl_hours: float = DEFAULT_BACKTEST_CACHE_TTL_HOURS,
+    refresh_cache: bool = False,
 ) -> list[BacktestResult]:
     bars_by_symbol: dict[str, list] = {}
     closes_by_symbol: dict[str, list[float]] = {}
     latest_price: dict[str, float] = {}
     for symbol in symbols:
         _log(f"{symbol}: fetching bars (duration={duration}, bar_size={bar_size})")
-        bars = broker.get_historical_bars(symbol=symbol, duration=duration, bar_size=bar_size)
+        bars = fetch_historical_bars_with_auto_split(
+            broker=broker,
+            symbol=symbol,
+            duration=duration,
+            bar_size=bar_size,
+            cache_ttl_hours=cache_ttl_hours,
+            refresh_cache=refresh_cache,
+        )
         closes = [bar.close for bar in bars]
         bars_by_symbol[symbol] = bars
         closes_by_symbol[symbol] = closes
@@ -339,8 +585,10 @@ def _run_backtest_portfolio(
             events.append((_date_sort_key(bars[i].date), symbol, i))
 
     events.sort(key=lambda x: (x[0], x[1]))
+    total_events = len(events)
+    _log(f"portfolio event stream prepared: total_events={total_events}, symbols={len(symbols)}", level="INFO")
 
-    for _sort_key, symbol, i in events:
+    for event_idx, (_sort_key, symbol, i) in enumerate(events, start=1):
         bars = bars_by_symbol[symbol]
         closes = closes_by_symbol[symbol]
         st = states[symbol]
@@ -348,11 +596,7 @@ def _run_backtest_portfolio(
         price = closes[i]
         time_label = bars[i].date
         latest_price[symbol] = price
-        signal_, _detail = evaluate_combined_signal(
-            closes[: i + 1],
-            config.strategy,
-            config.strategy_combo,
-        )
+        signal_, _detail = evaluate_combined_signal_at(closes, i, config.strategy, config.strategy_combo)
         stop_loss = st["in_position"] and price <= st["entry"] * (1 - config.risk.stop_loss_pct)
 
         if signal_ == Signal.BUY and not st["in_position"]:
@@ -425,6 +669,12 @@ def _run_backtest_portfolio(
             st_sym = states[sym]
             position_value = st_sym["shares"] * latest_price.get(sym, 0.0) if st_sym["in_position"] else 0.0
             st_sym["equity_curve"].append(initial_capital + st_sym["realized_pnl"] + position_value)
+
+        if event_idx % BACKTEST_PROGRESS_STEP_EVENTS == 0:
+            _log(
+                f"portfolio progress {event_idx}/{total_events} ({event_idx*100.0/max(1, total_events):.1f}%)",
+                level="INFO",
+            )
 
     for symbol in symbols:
         bars = bars_by_symbol[symbol]
@@ -508,6 +758,8 @@ def run_backtest(
     bar_size: str | None = None,
     symbols: list[str] | None = None,
     mode: str = "portfolio",
+    cache_ttl_hours: float = DEFAULT_BACKTEST_CACHE_TTL_HOURS,
+    refresh_cache: bool = False,
 ) -> list[BacktestResult]:
     normalized_mode = _normalize_mode(mode)
     symbol_list = symbols if symbols is not None else config.symbols
@@ -515,7 +767,8 @@ def run_backtest(
     use_bar_size = bar_size or config.strategy.bar_size
     _log(
         f"batch start: symbols={len(symbol_list)}, duration={use_duration}, "
-        f"bar_size={use_bar_size}, initial_capital={initial_capital:.2f}, mode={normalized_mode}"
+        f"bar_size={use_bar_size}, initial_capital={initial_capital:.2f}, mode={normalized_mode}, "
+        f"cache_ttl_hours={cache_ttl_hours:.2f}, refresh_cache={refresh_cache}"
     )
     if normalized_mode == "portfolio":
         results = _run_backtest_portfolio(
@@ -525,6 +778,8 @@ def run_backtest(
             duration=use_duration,
             bar_size=use_bar_size,
             symbols=symbol_list,
+            cache_ttl_hours=cache_ttl_hours,
+            refresh_cache=refresh_cache,
         )
     else:
         results = [
@@ -535,6 +790,8 @@ def run_backtest(
                 initial_capital,
                 duration=duration,
                 bar_size=bar_size,
+                cache_ttl_hours=cache_ttl_hours,
+                refresh_cache=refresh_cache,
             )
             for symbol in symbol_list
         ]

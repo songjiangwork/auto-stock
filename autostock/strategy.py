@@ -56,6 +56,31 @@ def moving_average_crossover_signal(closes: list[float], short_window: int, long
     return Signal.HOLD
 
 
+def moving_average_crossover_signal_at(
+    closes: list[float],
+    end_index: int,
+    short_window: int,
+    long_window: int,
+) -> Signal:
+    if short_window >= long_window:
+        raise ValueError("short_window must be smaller than long_window")
+    if end_index < 0 or end_index >= len(closes):
+        raise ValueError("end_index out of range")
+    if end_index + 1 < long_window + 2:
+        return Signal.HOLD
+
+    curr_short = sum(closes[end_index - short_window + 1 : end_index + 1]) / short_window
+    prev_short = sum(closes[end_index - short_window : end_index]) / short_window
+    curr_long = sum(closes[end_index - long_window + 1 : end_index + 1]) / long_window
+    prev_long = sum(closes[end_index - long_window : end_index]) / long_window
+
+    if prev_short <= prev_long and curr_short > curr_long:
+        return Signal.BUY
+    if prev_short >= prev_long and curr_short < curr_long:
+        return Signal.SELL
+    return Signal.HOLD
+
+
 def rsi_signal(closes: list[float], config: RSIConfig) -> Signal:
     if config.window <= 0:
         raise ValueError("rsi window must be positive")
@@ -65,6 +90,39 @@ def rsi_signal(closes: list[float], config: RSIConfig) -> Signal:
     gains = 0.0
     losses = 0.0
     for i in range(len(closes) - config.window, len(closes)):
+        change = closes[i] - closes[i - 1]
+        if change > 0:
+            gains += change
+        else:
+            losses += -change
+
+    avg_gain = gains / config.window
+    avg_loss = losses / config.window
+    if avg_loss == 0:
+        rsi = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+
+    if rsi <= config.oversold:
+        return Signal.BUY
+    if rsi >= config.overbought:
+        return Signal.SELL
+    return Signal.HOLD
+
+
+def rsi_signal_at(closes: list[float], end_index: int, config: RSIConfig) -> Signal:
+    if config.window <= 0:
+        raise ValueError("rsi window must be positive")
+    if end_index < 0 or end_index >= len(closes):
+        raise ValueError("end_index out of range")
+    if end_index + 1 < config.window + 1:
+        return Signal.HOLD
+
+    gains = 0.0
+    losses = 0.0
+    start = end_index - config.window + 1
+    for i in range(start, end_index + 1):
         change = closes[i] - closes[i - 1]
         if change > 0:
             gains += change
@@ -152,6 +210,25 @@ def evaluate_combined_signal(
     closes: list[float], strategy_cfg: StrategyConfig, combo_cfg: StrategyComboConfig
 ) -> tuple[Signal, str]:
     votes = generate_votes(closes, strategy_cfg, combo_cfg)
+    signal, decision_reason = combine_votes(votes, combo_cfg)
+    detail = ",".join(f"{v.name}:{v.signal.value}:{v.weight}" for v in votes) or "none"
+    return signal, f"{decision_reason}|{detail}"
+
+
+def evaluate_combined_signal_at(
+    closes: list[float],
+    end_index: int,
+    strategy_cfg: StrategyConfig,
+    combo_cfg: StrategyComboConfig,
+) -> tuple[Signal, str]:
+    votes: list[StrategyVote] = []
+    for name in combo_cfg.enabled_strategies:
+        if name == "ma":
+            sig = moving_average_crossover_signal_at(closes, end_index, strategy_cfg.short_window, strategy_cfg.long_window)
+            votes.append(StrategyVote(name="ma", signal=sig, weight=_weight(combo_cfg, "ma"), reason="ma_crossover"))
+        elif name == "rsi":
+            sig = rsi_signal_at(closes, end_index, combo_cfg.rsi)
+            votes.append(StrategyVote(name="rsi", signal=sig, weight=_weight(combo_cfg, "rsi"), reason="rsi_threshold"))
     signal, decision_reason = combine_votes(votes, combo_cfg)
     detail = ",".join(f"{v.name}:{v.signal.value}:{v.weight}" for v in votes) or "none"
     return signal, f"{decision_reason}|{detail}"

@@ -8,6 +8,14 @@ from pathlib import Path
 import sys
 
 from autostock.backtest import export_backtest_trades, run_backtest, summarize_backtest
+from autostock.backtest_grid import (
+    apply_overrides,
+    generate_grid_overrides,
+    grid_scenarios,
+    load_grid_spec,
+    normalize_parameter_grid,
+)
+from autostock.backtest_grid_report import write_leaderboard_html, write_trades_html
 from autostock.config import AppConfig, load_config, load_default_config
 from autostock.database import Database
 from autostock.engine import run_loop, us_market_is_open
@@ -63,6 +71,64 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["portfolio", "per-symbol"],
         default=None,
         help="Backtest capital mode (default: uses backtest.mode from config, which defaults to portfolio).",
+    )
+    backtest_parser.add_argument(
+        "--cache-ttl-hours",
+        type=float,
+        default=24.0,
+        help="Reuse backtest historical cache when file age is within this TTL (default: 24).",
+    )
+    backtest_parser.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Ignore backtest historical cache and force fresh IB fetch.",
+    )
+    backtest_grid_parser = sub.add_parser("backtest-grid", help="Run batch backtests using parameter grid YAML")
+    backtest_grid_parser.add_argument(
+        "--grid",
+        default="config/backtest_grid.yaml",
+        help="Path to grid YAML config (default: config/backtest_grid.yaml).",
+    )
+    backtest_grid_parser.add_argument(
+        "--initial-capital",
+        type=float,
+        default=None,
+        help="Initial capital (default: uses capital.max_deploy_usd).",
+    )
+    backtest_grid_parser.add_argument(
+        "--ticker",
+        default="",
+        help="Optional single ticker to backtest (e.g. TSLA). If omitted, all configured symbols are used.",
+    )
+    backtest_grid_parser.add_argument(
+        "--mode",
+        choices=["portfolio", "per-symbol"],
+        default=None,
+        help="Backtest capital mode (default: uses backtest.mode from config).",
+    )
+    backtest_grid_parser.add_argument(
+        "--cache-ttl-hours",
+        type=float,
+        default=24.0,
+        help="Reuse backtest historical cache when file age is within this TTL (default: 24).",
+    )
+    backtest_grid_parser.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Ignore backtest historical cache and force fresh IB fetch.",
+    )
+    backtest_grid_report_parser = sub.add_parser(
+        "backtest-grid-report", help="Generate sortable HTML leaderboard from a grid_summary.csv"
+    )
+    backtest_grid_report_parser.add_argument(
+        "--summary",
+        required=True,
+        help="Path to grid summary CSV (for example data/backtests/grid/<timestamp>/grid_summary.csv).",
+    )
+    backtest_grid_report_parser.add_argument(
+        "--output",
+        default="",
+        help="Optional output HTML path (default: same folder as summary, name leaderboard.html).",
     )
     return parser
 
@@ -319,7 +385,14 @@ def _export_backtest_artifacts(
     print(f"Master summary updated: {master_path}")
 
 
-def _backtest(config_path: str, initial_capital: float | None, ticker: str, mode_override: str | None) -> int:
+def _backtest(
+    config_path: str,
+    initial_capital: float | None,
+    ticker: str,
+    mode_override: str | None,
+    cache_ttl_hours: float,
+    refresh_cache: bool,
+) -> int:
     config = _load_effective_config(config_path)
     selected_symbols = [ticker.strip().upper()] if ticker.strip() else config.symbols
     effective_initial_capital = (
@@ -339,6 +412,8 @@ def _backtest(config_path: str, initial_capital: float | None, ticker: str, mode
             bar_size="5 mins",
             symbols=selected_symbols,
             mode=mode,
+            cache_ttl_hours=cache_ttl_hours,
+            refresh_cache=refresh_cache,
         )
         results_1d = run_backtest(
             config,
@@ -348,6 +423,8 @@ def _backtest(config_path: str, initial_capital: float | None, ticker: str, mode
             bar_size="1 day",
             symbols=selected_symbols,
             mode=mode,
+            cache_ttl_hours=cache_ttl_hours,
+            refresh_cache=refresh_cache,
         )
     finally:
         broker.disconnect()
@@ -362,6 +439,163 @@ def _backtest(config_path: str, initial_capital: float | None, ticker: str, mode
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     _export_backtest_artifacts(results_5m, results_1d, timestamp, effective_initial_capital, mode, config)
+    return 0
+
+
+def _format_override(overrides: dict[str, object]) -> str:
+    return ";".join(f"{k}={overrides[k]}" for k in sorted(overrides.keys()))
+
+
+def _safe_filename_token(text: str) -> str:
+    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(text).strip())
+    out = out.strip("_")
+    while "__" in out:
+        out = out.replace("__", "_")
+    return out or "default"
+
+
+def _backtest_grid(
+    config_path: str,
+    grid_path: str,
+    initial_capital: float | None,
+    ticker: str,
+    mode_override: str | None,
+    cache_ttl_hours: float,
+    refresh_cache: bool,
+) -> int:
+    base_config = _load_effective_config(config_path)
+    raw_grid = load_grid_spec(grid_path)
+    param_grid = normalize_parameter_grid(raw_grid)
+    scenarios = grid_scenarios(raw_grid)
+    overrides_list = generate_grid_overrides(param_grid)
+    mode = str(mode_override or getattr(base_config.backtest, "mode", "portfolio")).lower()
+    selected_symbols = [ticker.strip().upper()] if ticker.strip() else base_config.symbols
+    effective_initial_capital = (
+        float(initial_capital) if initial_capital is not None else float(base_config.capital.max_deploy_usd)
+    )
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = Path("data") / "backtests" / "grid" / timestamp
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "grid_summary.csv"
+    trades_dir = out_dir / "trades"
+    trades_dir.mkdir(parents=True, exist_ok=True)
+    trades_index_path = trades_dir / "_index.csv"
+    total_runs = len(overrides_list) * len(scenarios)
+
+    print(f"Grid file: {grid_path}")
+    print(f"Symbols: {', '.join(selected_symbols)}")
+    print(f"Mode: {mode}")
+    print(f"Initial capital: {effective_initial_capital:.2f}")
+    print(f"Cache TTL hours: {cache_ttl_hours:.2f} (refresh={refresh_cache})")
+    print(f"Scenarios: {len(scenarios)}, parameter sets: {len(overrides_list)}, total runs: {total_runs}")
+
+    with summary_path.open("w", newline="", encoding="utf-8") as f, trades_index_path.open(
+        "w", newline="", encoding="utf-8"
+    ) as index_f:
+        writer = csv.writer(f)
+        index_writer = csv.writer(index_f)
+        writer.writerow(
+            [
+                "run_id",
+                "scenario",
+                "duration",
+                "bar_size",
+                "mode",
+                "symbols",
+                "total_symbols",
+                "total_trades",
+                "total_pnl",
+                "avg_return_pct",
+                "avg_max_drawdown_pct",
+                "portfolio_return_pct",
+                "overrides",
+            ]
+        )
+        index_writer.writerow(["run_id", "scenario", "duration", "bar_size", "trades_file", "trades_html", "overrides"])
+
+        broker = _broker_for_command(base_config, sidecar_client=True)
+        try:
+            broker.connect()
+            broker.ensure_symbols(selected_symbols)
+            run_id = 0
+            for overrides in overrides_list:
+                run_cfg = apply_overrides(base_config, overrides)
+                for scenario in scenarios:
+                    run_id += 1
+                    results = run_backtest(
+                        run_cfg,
+                        broker,
+                        initial_capital=effective_initial_capital,
+                        duration=scenario["duration"],
+                        bar_size=scenario["bar_size"],
+                        symbols=selected_symbols,
+                        mode=mode,
+                        cache_ttl_hours=cache_ttl_hours,
+                        refresh_cache=refresh_cache,
+                    )
+                    scenario_name = str(scenario["name"])
+                    trades_file = (
+                        trades_dir / f"run_{run_id:03d}__{_safe_filename_token(scenario_name)}__trades.csv"
+                    )
+                    export_backtest_trades(
+                        results,
+                        str(trades_file),
+                        initial_capital=effective_initial_capital,
+                    )
+                    trades_html = write_trades_html(trades_file)
+                    summary = summarize_backtest(results)
+                    portfolio_return_pct = (
+                        (summary.total_pnl / effective_initial_capital * 100.0)
+                        if effective_initial_capital > 0
+                        else 0.0
+                    )
+                    writer.writerow(
+                        [
+                            run_id,
+                            scenario["name"],
+                            scenario["duration"],
+                            scenario["bar_size"],
+                            mode,
+                            ";".join(selected_symbols),
+                            summary.total_symbols,
+                            summary.total_trades,
+                            f"{summary.total_pnl:.2f}",
+                            f"{summary.avg_return_pct*100:.4f}",
+                            f"{summary.avg_max_drawdown_pct*100:.4f}",
+                            f"{portfolio_return_pct:.4f}",
+                            _format_override(overrides),
+                        ]
+                    )
+                    index_writer.writerow(
+                        [
+                            run_id,
+                            scenario_name,
+                            scenario["duration"],
+                            scenario["bar_size"],
+                            str(trades_file),
+                            str(trades_html),
+                            _format_override(overrides),
+                        ]
+                    )
+                    print(
+                        f"[{run_id}/{total_runs}] {scenario['name']}: "
+                        f"pnl={summary.total_pnl:.2f}, trades={summary.total_trades}, overrides={_format_override(overrides)}"
+                    )
+        finally:
+            broker.disconnect()
+
+    print(f"Grid summary exported: {summary_path}")
+    print(f"Grid trades exported: {trades_dir}")
+    print(f"Grid trades index exported: {trades_index_path}")
+    leaderboard_path = write_leaderboard_html(summary_path)
+    print(f"Leaderboard exported: {leaderboard_path}")
+    return 0
+
+
+def _backtest_grid_report(summary_path: str, output_path: str) -> int:
+    out = write_leaderboard_html(summary_path, output_path or None)
+    print(f"Leaderboard exported: {out}")
     return 0
 
 
@@ -381,7 +615,26 @@ def main() -> int:
     if cmd == "report":
         return _report(args.config)
     if cmd == "backtest":
-        return _backtest(args.config, args.initial_capital, args.ticker, args.mode)
+        return _backtest(
+            args.config,
+            args.initial_capital,
+            args.ticker,
+            args.mode,
+            args.cache_ttl_hours,
+            args.refresh_cache,
+        )
+    if cmd == "backtest-grid":
+        return _backtest_grid(
+            args.config,
+            args.grid,
+            args.initial_capital,
+            args.ticker,
+            args.mode,
+            args.cache_ttl_hours,
+            args.refresh_cache,
+        )
+    if cmd == "backtest-grid-report":
+        return _backtest_grid_report(args.summary, args.output)
 
     parser.print_help()
     return 1

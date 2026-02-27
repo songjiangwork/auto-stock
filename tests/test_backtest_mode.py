@@ -19,8 +19,14 @@ class _FakeBroker:
     def __init__(self, bars_by_symbol: dict[str, list[HistoricalBar]]) -> None:
         self._bars_by_symbol = bars_by_symbol
 
-    def get_historical_bars(self, symbol: str, duration: str, bar_size: str) -> list[HistoricalBar]:
-        del duration, bar_size
+    def get_historical_bars(
+        self,
+        symbol: str,
+        duration: str,
+        bar_size: str,
+        end_datetime: str = "",
+    ) -> list[HistoricalBar]:
+        del duration, bar_size, end_datetime
         return list(self._bars_by_symbol.get(symbol, []))
 
 
@@ -73,15 +79,20 @@ def _bars() -> list[HistoricalBar]:
     ]
 
 
-def _fake_eval(closes: list[float], strategy_cfg: StrategyConfig, combo_cfg: StrategyComboConfig) -> tuple[Signal, str]:
-    del strategy_cfg, combo_cfg
-    if len(closes) == 2:
+def _fake_eval_at(
+    closes: list[float],
+    end_index: int,
+    strategy_cfg: StrategyConfig,
+    combo_cfg: StrategyComboConfig,
+) -> tuple[Signal, str]:
+    del closes, strategy_cfg, combo_cfg
+    if end_index == 1:
         return Signal.BUY, "test-buy"
     return Signal.HOLD, "test-hold"
 
 
 def test_backtest_portfolio_mode_uses_shared_cash_pool(monkeypatch) -> None:
-    monkeypatch.setattr(bt, "evaluate_combined_signal", _fake_eval)
+    monkeypatch.setattr(bt, "evaluate_combined_signal_at", _fake_eval_at)
     config = _build_config(mode="portfolio")
     broker = _FakeBroker({"AAA": _bars(), "BBB": _bars()})
     results = bt.run_backtest(config, broker, initial_capital=100.0, mode="portfolio")
@@ -93,7 +104,7 @@ def test_backtest_portfolio_mode_uses_shared_cash_pool(monkeypatch) -> None:
 
 
 def test_backtest_per_symbol_mode_keeps_independent_cash(monkeypatch) -> None:
-    monkeypatch.setattr(bt, "evaluate_combined_signal", _fake_eval)
+    monkeypatch.setattr(bt, "evaluate_combined_signal_at", _fake_eval_at)
     config = _build_config(mode="per-symbol")
     broker = _FakeBroker({"AAA": _bars(), "BBB": _bars()})
     results = bt.run_backtest(config, broker, initial_capital=100.0, mode="per-symbol")

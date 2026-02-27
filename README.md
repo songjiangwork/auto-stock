@@ -90,6 +90,10 @@ autostock backtest --initial-capital 120000
 autostock backtest --ticker TSLA
 autostock backtest --mode portfolio
 autostock backtest --mode per-symbol
+autostock backtest --cache-ttl-hours 24
+autostock backtest --refresh-cache
+autostock backtest-grid --grid config/backtest_grid.yaml
+autostock backtest-grid-report --summary data/backtests/grid/<YYYYMMDD_HHMMSS>/grid_summary.csv
 autostock report
 ```
 
@@ -150,6 +154,39 @@ Capital behavior:
   - `backtest.slippage_bps`
   - `backtest.commission_per_order`
   - `backtest.min_order_notional`
+- Historical data fetch in backtest auto-splits large requests:
+  - If estimated bars exceed `10000` per request, the app automatically fetches in chunks and merges locally.
+  - If a direct request fails, the app retries with chunked fetch automatically.
+- `backtest-grid` runs parameter combinations from YAML and writes aggregate output to:
+  - `data/backtests/grid/<YYYYMMDD_HHMMSS>/grid_summary.csv`
+  - `data/backtests/grid/<YYYYMMDD_HHMMSS>/leaderboard.html` (auto-generated)
+  - `data/backtests/grid/<YYYYMMDD_HHMMSS>/trades/` (auto-generated per-run trade details)
+  - `data/backtests/grid/<YYYYMMDD_HHMMSS>/trades/_index.csv` (maps `run_id -> trades file + overrides`)
+  - `data/backtests/grid/<YYYYMMDD_HHMMSS>/trades/run_XXX__<scenario>__trades.html` (auto-generated sortable HTML per run)
+  - Grid YAML default path: `config/backtest_grid.yaml`
+  - Supported parameter keys use dotted config paths (for example: `strategy.short_window`, `strategy.long_window`, `strategy_combo.decision_threshold`).
+  - Supports historical cache controls:
+    - `--cache-ttl-hours` (default `24`)
+    - `--refresh-cache`
+  - HTML leaderboard includes:
+    - one combined ranking for all scenarios
+    - one ranking table per scenario (supports any scenario name, e.g. `5min`, `10mins`, `1hour`, `1d`)
+  - Example command:
+```bash
+autostock backtest-grid --grid config/backtest_grid.yaml --mode portfolio
+```
+- `backtest-grid-report` renders sortable HTML leaderboard from grid output:
+  - Input: `data/backtests/grid/<YYYYMMDD_HHMMSS>/grid_summary.csv`
+  - Output (default): `data/backtests/grid/<YYYYMMDD_HHMMSS>/leaderboard.html`
+  - Example command:
+```bash
+autostock backtest-grid-report --summary data/backtests/grid/20260226_225741/grid_summary.csv
+```
+- Backtest historical cache:
+  - Cache directory: `data/cache/backtest/`
+  - Cache key dimensions: `symbol + bar_size + duration`
+  - `backtest` and `backtest-grid` both reuse this cache by default (within TTL).
+  - Backtest runtime prints periodic progress logs on large event streams to indicate active processing.
 - Exported CSV includes trade-level P/L and running totals:
   - `profit_loss_abs`, `profit_loss_pct`
   - `cum_profit_loss_abs`, `cum_profit_loss_pct`
